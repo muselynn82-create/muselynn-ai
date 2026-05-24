@@ -297,14 +297,13 @@ def calculate_score(df_5m, big_trend, market, strategy):
             score += 20
 
     elif strategy == "BEAR_SCALP":
-        if rsi < 30:
-            score += 35
-        if price <= now["bb_lower"] * 1.008:
-            score += 30
-        if volume_ratio >= 0.7:
-            score += 15
-        if prev["close"] < prev["bb_lower"] or price > now["bb_lower"]:
-            score += 15
+          return {
+              "take_profit": 0.25,
+              "stop_loss": -0.25,
+              "trail_start": 0.15,
+              "trail_back": 0.10,
+              "max_hold_minutes": 12
+          }
 
     return score
 
