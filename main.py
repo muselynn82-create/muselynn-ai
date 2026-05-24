@@ -1,50 +1,99 @@
 import os
 import time
-import csv
 import requests
 import pandas as pd
-from datetime import datetime
+import gspread
+
+from oauth2client.service_account import ServiceAccountCredentials
 from binance.client import Client
+
+# =========================
+# 환경변수
+# =========================
 
 API_KEY = os.getenv("BINANCE_API_KEY")
 API_SECRET = os.getenv("BINANCE_SECRET_KEY")
+
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+GOOGLE_CLIENT_EMAIL = os.getenv("GOOGLE_CLIENT_EMAIL")
+GOOGLE_PRIVATE_KEY = os.getenv("GOOGLE_PRIVATE_KEY").replace("\\n", "\n")
+GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME")
+
+# =========================
+# 바이낸스 연결
+# =========================
+
 client = Client(API_KEY, API_SECRET)
+
+# =========================
+# 구글시트 연결
+# =========================
+
+scope = [
+    "https://spreadsheets.google.com/feeds",
+    "https://www.googleapis.com/auth/drive"
+]
+
+creds_dict = {
+    "type": "service_account",
+    "client_email": GOOGLE_CLIENT_EMAIL,
+    "private_key": GOOGLE_PRIVATE_KEY,
+    "token_uri": "https://oauth2.googleapis.com/token"
+}
+
+credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+gc = gspread.authorize(credentials)
+
+sheet = gc.open(GOOGLE_SHEET_NAME).sheet1
+
+# =========================
+# 설정
+# =========================
 
 SYMBOL = "BTCUSDT"
 INTERVAL = Client.KLINE_INTERVAL_5MINUTE
-LIMIT = 220
+LIMIT = 120
 
 last_signal = None
-last_market_state = None
+last_market = None
 
+# =========================
+# 텔레그램
+# =========================
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": message})
 
+    requests.post(url, data={
+        "chat_id": CHAT_ID,
+        "text": message
+    })
 
-def save_signal(signal, price, rsi, market_state, strategy):
-    file_name = "signals.csv"
+# =========================
+# 시트 기록
+# =========================
+
+def save_log(data):
 
     row = [
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        SYMBOL,
-        signal,
-        round(price, 2),
-        round(rsi, 2),
-        market_state,
-        strategy,
+        data["time"],
+        data["market"],
+        data["signal"],
+        data["price"],
+        data["rsi"],
+        data["score"]
     ]
 
-    with open(file_name, "a", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(row)
+    sheet.append_row(row)
 
+# =========================
+# 캔들 가져오기
+# =========================
 
 def get_klines():
+
     candles = client.get_klines(
         symbol=SYMBOL,
         interval=INTERVAL,
@@ -57,203 +106,231 @@ def get_klines():
         "taker_buy_base", "taker_buy_quote", "ignore"
     ])
 
-    for col in ["open", "high", "low", "close", "volume"]:
-        df[col] = df[col].astype(float)
+    df["close"] = df["close"].astype(float)
 
     return df
 
+# =========================
+# 지표 계산
+# =========================
 
 def calculate_indicators(df):
+
     close = df["close"]
-    high = df["high"]
-    low = df["low"]
 
     # RSI
     delta = close.diff()
+
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
 
     avg_gain = gain.rolling(14).mean()
     avg_loss = loss.rolling(14).mean()
+
     rs = avg_gain / avg_loss
 
     df["rsi"] = 100 - (100 / (1 + rs))
 
-    # Bollinger Band
+    # 볼린저밴드
     df["bb_mid"] = close.rolling(20).mean()
-    df["bb_std"] = close.rolling(20).std()
-    df["bb_upper"] = df["bb_mid"] + df["bb_std"] * 2
-    df["bb_lower"] = df["bb_mid"] - df["bb_std"] * 2
-    df["bb_width"] = (df["bb_upper"] - df["bb_lower"]) / df["bb_mid"]
+
+    std = close.rolling(20).std()
+
+    df["bb_upper"] = df["bb_mid"] + (std * 2)
+    df["bb_lower"] = df["bb_mid"] - (std * 2)
 
     # EMA
     df["ema20"] = close.ewm(span=20, adjust=False).mean()
     df["ema50"] = close.ewm(span=50, adjust=False).mean()
-    df["ema200"] = close.ewm(span=200, adjust=False).mean()
-
-    # ATR
-    df["prev_close"] = close.shift(1)
-    df["tr1"] = high - low
-    df["tr2"] = (high - df["prev_close"]).abs()
-    df["tr3"] = (low - df["prev_close"]).abs()
-    df["tr"] = df[["tr1", "tr2", "tr3"]].max(axis=1)
-    df["atr"] = df["tr"].rolling(14).mean()
-    df["atr_rate"] = df["atr"] / close
-
-    # Volume
-    df["volume_ma"] = df["volume"].rolling(20).mean()
-    df["volume_ratio"] = df["volume"] / df["volume_ma"]
+    df["ema100"] = close.ewm(span=100, adjust=False).mean()
 
     return df
 
+# =========================
+# 시장 상태 판단
+# =========================
 
-def detect_market_state(df):
+def detect_market(df):
+
     now = df.iloc[-1]
 
     price = now["close"]
+
     ema20 = now["ema20"]
     ema50 = now["ema50"]
-    ema200 = now["ema200"]
-    atr_rate = now["atr_rate"]
-    bb_width = now["bb_width"]
+    ema100 = now["ema100"]
 
-    if atr_rate > 0.012 or bb_width > 0.055:
-        return "VOLATILE"
-
-    if price > ema20 > ema50 > ema200:
+    if price > ema20 > ema50 > ema100:
         return "BULL"
 
-    if price < ema20 < ema50 < ema200:
+    elif price < ema20 < ema50 < ema100:
         return "BEAR"
 
-    return "SIDEWAYS"
+    else:
+        return "SIDE"
 
+# =========================
+# 전략
+# =========================
 
 def check_signal(df):
-    global last_signal, last_market_state
+
+    global last_signal
+    global last_market
 
     now = df.iloc[-1]
     prev = df.iloc[-2]
 
     price = now["close"]
     rsi = now["rsi"]
+
     bb_lower = now["bb_lower"]
+    bb_upper = now["bb_upper"]
     bb_mid = now["bb_mid"]
-    ema20 = now["ema20"]
-    ema50 = now["ema50"]
-    volume_ratio = now["volume_ratio"]
 
-    market_state = detect_market_state(df)
+    market = detect_market(df)
 
-    if market_state != last_market_state:
+    score = 0
+
+    # =====================
+    # 시장 상태 변경 알림
+    # =====================
+
+    if market != last_market:
+
         send_telegram(
             f"📊 시장상태 변경\n\n"
-            f"현재 상태: {market_state}\n"
+            f"현재 상태: {market}\n"
             f"가격: {price:.2f}\n"
             f"RSI: {rsi:.2f}"
         )
-        last_market_state = market_state
 
-    signal = None
-    strategy = None
+        last_market = market
 
-    # =========================
-    # 횡보장 전략
-    # RSI + 볼린저밴드 반등
-    # =========================
-    if market_state == "SIDEWAYS":
-        strategy = "RSI_BB_REVERSION"
+    # =====================
+    # BULL 전략
+    # =====================
 
-        if (
-            prev["close"] < prev["bb_lower"] and
-            price > bb_lower and
-            rsi < 35 and
-            volume_ratio > 0.7
-        ):
-            signal = "BUY"
+    if market == "BULL":
 
-        elif last_signal == "BUY" and price >= bb_mid and rsi > 50:
-            signal = "SELL"
+        if rsi < 40:
+            score += 40
 
-    # =========================
-    # 상승장 전략
-    # EMA 눌림목
-    # =========================
-    elif market_state == "BULL":
-        strategy = "BULL_PULLBACK"
+        if price < bb_mid:
+            score += 30
 
-        if (
-            price > ema50 and
-            price <= ema20 * 1.003 and
-            40 <= rsi <= 55 and
-            volume_ratio > 0.7
-        ):
-            signal = "BUY"
+        if price > now["ema20"]:
+            score += 30
 
-        elif last_signal == "BUY" and (rsi > 68 or price < ema20 * 0.995):
-            signal = "SELL"
+    # =====================
+    # SIDE 전략
+    # =====================
 
-    # =========================
-    # 하락장 전략
-    # 현물 기준 매수 금지
-    # =========================
-    elif market_state == "BEAR":
-        strategy = "NO_TRADE_BEAR"
-        signal = None
+    elif market == "SIDE":
 
-    # =========================
-    # 고변동성 전략
-    # 거래 중지
-    # =========================
-    elif market_state == "VOLATILE":
-        strategy = "NO_TRADE_VOLATILE"
-        signal = None
+        if prev["close"] < prev["bb_lower"]:
+            score += 40
 
-    if signal == "BUY" and last_signal != "BUY":
-        msg = (
-            f"🟢 BTC 매수 관심 신호\n\n"
-            f"시장상태: {market_state}\n"
-            f"전략: {strategy}\n"
+        if price > bb_lower:
+            score += 30
+
+        if rsi < 35:
+            score += 30
+
+    # =====================
+    # BEAR 전략
+    # =====================
+
+    elif market == "BEAR":
+
+        if rsi < 25:
+            score += 50
+
+        if price < bb_lower:
+            score += 30
+
+        if price < now["ema20"]:
+            score += 20
+
+    # =====================
+    # 진입 신호
+    # =====================
+
+    if score >= 70 and last_signal != "BUY":
+
+        message = (
+            f"🟢 BTC 진입 관심 신호\n\n"
+            f"시장상태: {market}\n"
             f"가격: {price:.2f}\n"
             f"RSI: {rsi:.2f}\n"
-            f"거래량비율: {volume_ratio:.2f}"
+            f"진입점수: {score}"
         )
 
-        send_telegram(msg)
-        save_signal("BUY", price, rsi, market_state, strategy)
+        send_telegram(message)
+
+        save_log({
+            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "market": market,
+            "signal": "BUY",
+            "price": price,
+            "rsi": round(rsi, 2),
+            "score": score
+        })
+
         last_signal = "BUY"
 
-    elif signal == "SELL" and last_signal == "BUY":
-        msg = (
-            f"🔴 BTC 청산 관심 신호\n\n"
-            f"시장상태: {market_state}\n"
-            f"전략: {strategy}\n"
-            f"가격: {price:.2f}\n"
-            f"RSI: {rsi:.2f}"
-        )
+    # =====================
+    # 청산 신호
+    # =====================
 
-        send_telegram(msg)
-        save_signal("SELL", price, rsi, market_state, strategy)
-        last_signal = "SELL"
+    if last_signal == "BUY":
+
+        if rsi > 60 or price > bb_upper:
+
+            message = (
+                f"🔴 BTC 청산 관심 신호\n\n"
+                f"시장상태: {market}\n"
+                f"가격: {price:.2f}\n"
+                f"RSI: {rsi:.2f}"
+            )
+
+            send_telegram(message)
+
+            save_log({
+                "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "market": market,
+                "signal": "SELL",
+                "price": price,
+                "rsi": round(rsi, 2),
+                "score": score
+            })
+
+            last_signal = "SELL"
 
     print(
-        f"PRICE={price:.2f} | "
-        f"RSI={rsi:.2f} | "
-        f"STATE={market_state} | "
-        f"STRATEGY={strategy} | "
-        f"VOL={volume_ratio:.2f}"
+        f"{market} | PRICE={price:.2f} | RSI={rsi:.2f} | SCORE={score}"
     )
 
+# =========================
+# 시작
+# =========================
 
 send_telegram("🚀 시장상태 분기형 BTC 5분봉 전략봇 시작")
 
 while True:
+
     try:
+
         df = get_klines()
+
         df = calculate_indicators(df)
+
         check_signal(df)
+
         time.sleep(60)
 
     except Exception as e:
-        send_telegram(f"❌ 봇 오류 발생\n{str(e)}")
+
+        send_telegram(f"❌ 오류 발생\n{str(e)}")
+
         time.sleep(60)
