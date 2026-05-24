@@ -28,6 +28,7 @@ creds_dict = {
     "type": "service_account",
     "client_email": GOOGLE_CLIENT_EMAIL,
     "private_key": GOOGLE_PRIVATE_KEY,
+    "private_key_id": os.getenv("GOOGLE_PRIVATE_KEY_ID"),
     "token_uri": "https://oauth2.googleapis.com/token"
 }
 
