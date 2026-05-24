@@ -97,9 +97,22 @@ cumulative_pnl = 0.0
 
 
 def send_telegram(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": message})
+    now = datetime.now(ZoneInfo("Asia/Seoul"))
+    hour = now.hour
 
+    # 새벽 3시 ~ 오전 8시 알림 차단
+    if 3 <= hour < 8:
+        return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+
+    requests.post(
+        url,
+        data={
+            "chat_id": CHAT_ID,
+            "text": message
+        }
+    )
 
 HEADERS = [
     "time", "symbol", "big_trend", "market", "strategy", "signal",
