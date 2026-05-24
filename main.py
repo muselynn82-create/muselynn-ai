@@ -96,12 +96,13 @@ consecutive_losses = 0
 cumulative_pnl = 0.0
 
 
-def send_telegram(message):
+def send_telegram(message, force=False):
     now = datetime.now(ZoneInfo("Asia/Seoul"))
     hour = now.hour
 
-    # 새벽 3시 ~ 오전 8시 알림 차단
-    if 3 <= hour < 8:
+    # 새벽 3시 ~ 오전 8시 일반 알림 차단
+    # force=True면 오류 알림은 무조건 전송
+    if not force and 3 <= hour < 8:
         return
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -754,5 +755,5 @@ while True:
 
     except Exception as e:
         error_count += 1
-        send_telegram(f"❌ 오류 발생\n{str(e)}")
+        send_telegram(f"❌ 오류 발생\n{str(e)}", force=True)
         time.sleep(60)
