@@ -4,6 +4,6 @@ WORKDIR /app
 
 COPY . .
 
-RUN pip install python-binance requests
+RUN pip install python-binance requests pandas numpy
 
 CMD ["python", "main.py"]
