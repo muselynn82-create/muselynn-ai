@@ -26,10 +26,15 @@ scope = [
 
 creds_dict = {
     "type": "service_account",
-    "client_email": GOOGLE_CLIENT_EMAIL,
-    "private_key": GOOGLE_PRIVATE_KEY,
+    "project_id": os.getenv("GOOGLE_PROJECT_ID"),
     "private_key_id": os.getenv("GOOGLE_PRIVATE_KEY_ID"),
-    "token_uri": "https://oauth2.googleapis.com/token"
+    "private_key": GOOGLE_PRIVATE_KEY,
+    "client_email": GOOGLE_CLIENT_EMAIL,
+    "client_id": os.getenv("GOOGLE_CLIENT_ID"),
+    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+    "token_uri": "https://oauth2.googleapis.com/token",
+    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+    "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/{GOOGLE_CLIENT_EMAIL}"
 }
 
 credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
