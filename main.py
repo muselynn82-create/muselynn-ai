@@ -6,7 +6,12 @@ import gspread
 
 from oauth2client.service_account import ServiceAccountCredentials
 from binance.client import Client
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
+def now_kst():
+    return datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
+    
 API_KEY = os.getenv("BINANCE_API_KEY")
 API_SECRET = os.getenv("BINANCE_SECRET_KEY")
 
@@ -357,7 +362,7 @@ def write_log(df_5m, big_trend, market, strategy, signal, score, exit_reason="-"
     price = now["close"]
 
     save_log({
-        "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "time": now_kst(),
         "symbol": SYMBOL,
         "big_trend": big_trend,
         "market": market,
@@ -421,7 +426,7 @@ def close_position(df_5m, big_trend, market, score, exit_reason):
     write_log(df_5m, big_trend, market, entry_strategy, "SELL", score, exit_reason)
 
     signal_count += 1
-    last_exit_time = time.strftime("%Y-%m-%d %H:%M:%S")
+    last_exit_time = now_kst()
 
     position_open = False
     entry_price = 0.0
@@ -505,7 +510,7 @@ def check_entry(df_5m, big_trend, market, strategy, score):
 
     position_open = True
     entry_price = price
-    entry_time = time.strftime("%Y-%m-%d %H:%M:%S")
+    entry_time = now_kst()
     entry_market = market
     entry_big_trend = big_trend
     entry_strategy = strategy
