@@ -48,7 +48,13 @@ credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope
 gc = gspread.authorize(credentials)
 
 spreadsheet = gc.open(GOOGLE_SHEET_NAME)
-sheet = spreadsheet.sheet1
+
+sheet = spreadsheet.worksheet("BTC_TRADING_LOG")
+
+try:
+    state_sheet = spreadsheet.worksheet("STATE")
+except:
+    state_sheet = spreadsheet.add_worksheet(title="STATE", rows=30, cols=2)
 
 try:
     state_sheet = spreadsheet.worksheet("STATE")
