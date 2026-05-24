@@ -43,8 +43,9 @@ sheet = gc.open(GOOGLE_SHEET_NAME).sheet1
 
 SYMBOL = "BTCUSDT"
 
+ENTRY_SCORE = 55
 FEE_ROUND_TRIP = 0.20
-MAX_CONSECUTIVE_LOSSES = 3
+MAX_CONSECUTIVE_LOSSES = 5
 
 last_report_time = time.time()
 last_market = None
@@ -91,27 +92,12 @@ def init_sheet_header():
 
 def save_log(data):
     sheet.append_row([
-        data["time"],
-        data["symbol"],
-        data["big_trend"],
-        data["market"],
-        data["strategy"],
-        data["signal"],
-        data["price"],
-        data["rsi"],
-        data["score"],
-        data["ema20"],
-        data["ema50"],
-        data["ema100"],
-        data["ema200"],
-        data["position_open"],
-        data["entry_price"],
-        data["gross_pnl"],
-        data["net_pnl"],
-        data["total_trades"],
-        data["win_rate"],
-        data["cumulative_pnl"],
-        data["exit_reason"],
+        data["time"], data["symbol"], data["big_trend"], data["market"],
+        data["strategy"], data["signal"], data["price"], data["rsi"],
+        data["score"], data["ema20"], data["ema50"], data["ema100"],
+        data["ema200"], data["position_open"], data["entry_price"],
+        data["gross_pnl"], data["net_pnl"], data["total_trades"],
+        data["win_rate"], data["cumulative_pnl"], data["exit_reason"],
         data["strategy_enabled"]
     ])
 
@@ -135,11 +121,7 @@ def get_net_pnl(price):
 
 
 def get_klines(interval, limit):
-    candles = client.get_klines(
-        symbol=SYMBOL,
-        interval=interval,
-        limit=limit
-    )
+    candles = client.get_klines(symbol=SYMBOL, interval=interval, limit=limit)
 
     df = pd.DataFrame(candles, columns=[
         "time", "open", "high", "low", "close", "volume",
@@ -170,9 +152,8 @@ def calculate_indicators(df):
 
     df["bb_mid"] = close.rolling(20).mean()
     std = close.rolling(20).std()
-
-    df["bb_upper"] = df["bb_mid"] + (std * 2)
-    df["bb_lower"] = df["bb_mid"] - (std * 2)
+    df["bb_upper"] = df["bb_mid"] + std * 2
+    df["bb_lower"] = df["bb_mid"] - std * 2
     df["bb_width"] = (df["bb_upper"] - df["bb_lower"]) / df["bb_mid"]
 
     df["ema20"] = close.ewm(span=20, adjust=False).mean()
@@ -188,6 +169,9 @@ def calculate_indicators(df):
     df["atr"] = df["tr"].rolling(14).mean()
     df["atr_rate"] = df["atr"] / close
 
+    df["volume_ma"] = df["volume"].rolling(20).mean()
+    df["volume_ratio"] = df["volume"] / df["volume_ma"]
+
     return df
 
 
@@ -195,21 +179,13 @@ def detect_big_trend(df_1h, df_4h):
     h1 = df_1h.iloc[-1]
     h4 = df_4h.iloc[-1]
 
-    h1_price = h1["close"]
-    h4_price = h4["close"]
+    h1_bull = h1["close"] > h1["ema50"] > h1["ema200"]
+    h4_bull = h4["close"] > h4["ema50"] > h4["ema200"]
 
-    h1_bull = h1_price > h1["ema50"] > h1["ema200"]
-    h4_bull = h4_price > h4["ema50"] > h4["ema200"]
+    h1_bear = h1["close"] < h1["ema50"] < h1["ema200"]
+    h4_bear = h4["close"] < h4["ema50"] < h4["ema200"]
 
-    h1_bear = h1_price < h1["ema50"] < h1["ema200"]
-    h4_bear = h4_price < h4["ema50"] < h4["ema200"]
-
-    crash = (
-        h1["atr_rate"] > 0.025 or
-        h4["atr_rate"] > 0.045
-    )
-
-    if crash:
+    if h1["atr_rate"] > 0.03 or h4["atr_rate"] > 0.055:
         return "BIG_CRASH"
 
     if h1_bull and h4_bull:
@@ -223,10 +199,9 @@ def detect_big_trend(df_1h, df_4h):
 
 def detect_short_market(df_5m):
     now = df_5m.iloc[-1]
-
     price = now["close"]
 
-    if now["atr_rate"] > 0.012 or now["bb_width"] > 0.055:
+    if now["atr_rate"] > 0.014 or now["bb_width"] > 0.065:
         return "VOLATILE"
 
     if price > now["ema20"] > now["ema50"] > now["ema100"]:
@@ -245,19 +220,20 @@ def get_strategy(big_trend, market):
     if big_trend == "BIG_BULL":
         if market in ["BULL", "SIDE"]:
             return "BULL_PULLBACK"
-        return "NO_TRADE"
+        if market == "BEAR":
+            return "BULL_DEEP_PULLBACK"
 
     if big_trend == "BIG_SIDE":
         if market == "SIDE":
             return "SIDE_RSI_BB"
         if market == "BULL":
             return "BULL_PULLBACK_LIGHT"
-        return "NO_TRADE"
+        if market == "BEAR":
+            return "SIDE_DEEP_REBOUND"
 
     if big_trend == "BIG_BEAR":
-        if market == "SIDE":
+        if market in ["SIDE", "BEAR", "VOLATILE"]:
             return "BEAR_SCALP"
-        return "NO_TRADE_BEAR"
 
     return "NO_TRADE"
 
@@ -268,92 +244,91 @@ def calculate_score(df_5m, big_trend, market, strategy):
 
     price = now["close"]
     rsi = now["rsi"]
+    volume_ratio = now["volume_ratio"]
 
     score = 0
 
     if strategy == "SIDE_RSI_BB":
-        if prev["close"] < prev["bb_lower"]:
-            score += 35
-        if price > now["bb_lower"]:
-            score += 25
-        if rsi < 35:
+        if rsi < 38:
             score += 30
+        if price <= now["bb_lower"] * 1.006:
+            score += 25
+        if price > now["bb_lower"]:
+            score += 20
         if market == "SIDE":
+            score += 15
+        if volume_ratio >= 0.8:
             score += 10
 
+    elif strategy == "SIDE_DEEP_REBOUND":
+        if rsi < 30:
+            score += 35
+        if price <= now["bb_lower"] * 1.004:
+            score += 30
+        if volume_ratio >= 0.8:
+            score += 15
+
     elif strategy == "BULL_PULLBACK":
-        if 38 <= rsi <= 55:
+        if 35 <= rsi <= 58:
             score += 35
         if price > now["ema50"]:
             score += 25
-        if price <= now["ema20"] * 1.004:
+        if price <= now["ema20"] * 1.006:
             score += 25
         if big_trend == "BIG_BULL":
             score += 15
 
     elif strategy == "BULL_PULLBACK_LIGHT":
-        if 40 <= rsi <= 55:
+        if 38 <= rsi <= 58:
             score += 30
         if price > now["ema50"]:
             score += 25
-        if price <= now["ema20"] * 1.003:
+        if price <= now["ema20"] * 1.006:
+            score += 20
+        if volume_ratio >= 0.7:
+            score += 10
+
+    elif strategy == "BULL_DEEP_PULLBACK":
+        if rsi < 32:
+            score += 40
+        if price <= now["bb_lower"] * 1.006:
+            score += 30
+        if price > now["ema100"]:
             score += 20
 
     elif strategy == "BEAR_SCALP":
-        if rsi < 22:
-            score += 40
-        if price < now["bb_lower"]:
+        if rsi < 30:
             score += 35
-        if market == "SIDE":
-            score += 10
+        if price <= now["bb_lower"] * 1.008:
+            score += 30
+        if volume_ratio >= 0.7:
+            score += 15
+        if prev["close"] < prev["bb_lower"] or price > now["bb_lower"]:
+            score += 15
 
     return score
 
 
 def get_risk_params(strategy):
     if strategy == "SIDE_RSI_BB":
-        return {
-            "take_profit": 0.75,
-            "stop_loss": -0.65,
-            "trail_start": 0.45,
-            "trail_back": 0.30,
-            "max_hold_minutes": 45
-        }
+        return {"take_profit": 0.55, "stop_loss": -0.45, "trail_start": 0.35, "trail_back": 0.22, "max_hold_minutes": 35}
+
+    if strategy == "SIDE_DEEP_REBOUND":
+        return {"take_profit": 0.45, "stop_loss": -0.40, "trail_start": 0.28, "trail_back": 0.20, "max_hold_minutes": 25}
 
     if strategy == "BULL_PULLBACK":
-        return {
-            "take_profit": 1.60,
-            "stop_loss": -0.85,
-            "trail_start": 0.90,
-            "trail_back": 0.45,
-            "max_hold_minutes": 180
-        }
+        return {"take_profit": 1.20, "stop_loss": -0.70, "trail_start": 0.70, "trail_back": 0.35, "max_hold_minutes": 150}
 
     if strategy == "BULL_PULLBACK_LIGHT":
-        return {
-            "take_profit": 1.00,
-            "stop_loss": -0.70,
-            "trail_start": 0.60,
-            "trail_back": 0.35,
-            "max_hold_minutes": 90
-        }
+        return {"take_profit": 0.85, "stop_loss": -0.55, "trail_start": 0.50, "trail_back": 0.30, "max_hold_minutes": 80}
+
+    if strategy == "BULL_DEEP_PULLBACK":
+        return {"take_profit": 0.75, "stop_loss": -0.55, "trail_start": 0.45, "trail_back": 0.28, "max_hold_minutes": 60}
 
     if strategy == "BEAR_SCALP":
-        return {
-            "take_profit": 0.40,
-            "stop_loss": -0.45,
-            "trail_start": 0.25,
-            "trail_back": 0.20,
-            "max_hold_minutes": 25
-        }
+        return {"take_profit": 0.35, "stop_loss": -0.32, "trail_start": 0.22, "trail_back": 0.16, "max_hold_minutes": 18}
 
-    return {
-        "take_profit": 0.0,
-        "stop_loss": 0.0,
-        "trail_start": 0.0,
-        "trail_back": 0.0,
-        "max_hold_minutes": 0
-    }
+    return {"take_profit": 0, "stop_loss": 0, "trail_start": 0, "trail_back": 0, "max_hold_minutes": 0}
 
 
 def write_log(df_5m, big_trend, market, strategy, signal, score, exit_reason="-"):
@@ -387,20 +362,10 @@ def write_log(df_5m, big_trend, market, strategy, signal, score, exit_reason="-"
 
 
 def close_position(df_5m, big_trend, market, score, exit_reason):
-    global position_open
-    global entry_price
-    global entry_time
-    global entry_market
-    global entry_big_trend
-    global entry_strategy
-    global max_pnl
-    global signal_count
-    global total_trades
-    global win_trades
-    global loss_trades
-    global consecutive_losses
-    global cumulative_pnl
-    global strategy_enabled
+    global position_open, entry_price, entry_time, entry_market
+    global entry_big_trend, entry_strategy, max_pnl
+    global signal_count, total_trades, win_trades, loss_trades
+    global consecutive_losses, cumulative_pnl, strategy_enabled
 
     now = df_5m.iloc[-1]
     price = now["close"]
@@ -434,7 +399,6 @@ def close_position(df_5m, big_trend, market, score, exit_reason):
     write_log(df_5m, big_trend, market, entry_strategy, "SELL", score, exit_reason)
 
     signal_count += 1
-
     position_open = False
     entry_price = 0.0
     entry_time = None
@@ -448,7 +412,7 @@ def close_position(df_5m, big_trend, market, score, exit_reason):
         send_telegram(
             f"🚨 전략 자동 OFF\n\n"
             f"사유: {consecutive_losses}연속 손실\n"
-            f"조치: 실거래 금지, 전략 재점검 필요"
+            f"조치: 데이터 확인 후 재가동 필요"
         )
 
 
@@ -461,7 +425,6 @@ def check_exit(df_5m, big_trend, market, score):
     now = df_5m.iloc[-1]
     price = now["close"]
     rsi = now["rsi"]
-
     gross_pnl = get_gross_pnl(price)
 
     if gross_pnl > max_pnl:
@@ -477,10 +440,7 @@ def check_exit(df_5m, big_trend, market, score):
         close_position(df_5m, big_trend, market, score, "TAKE_PROFIT")
         return
 
-    if (
-        max_pnl >= params["trail_start"] and
-        gross_pnl <= max_pnl - params["trail_back"]
-    ):
+    if max_pnl >= params["trail_start"] and gross_pnl <= max_pnl - params["trail_back"]:
         close_position(df_5m, big_trend, market, score, "TRAILING_STOP")
         return
 
@@ -496,24 +456,14 @@ def check_exit(df_5m, big_trend, market, score):
         close_position(df_5m, big_trend, market, score, "BIG_CRASH_EXIT")
         return
 
-    if entry_big_trend == "BIG_BULL" and big_trend == "BIG_BEAR":
-        close_position(df_5m, big_trend, market, score, "BIG_TREND_REVERSAL")
-        return
-
-    if entry_strategy in ["SIDE_RSI_BB", "BEAR_SCALP"] and rsi > 60:
+    if entry_strategy in ["SIDE_RSI_BB", "SIDE_DEEP_REBOUND", "BEAR_SCALP"] and rsi > 58:
         close_position(df_5m, big_trend, market, score, "RSI_EXIT")
         return
 
 
 def check_entry(df_5m, big_trend, market, strategy, score):
-    global position_open
-    global entry_price
-    global entry_time
-    global entry_market
-    global entry_big_trend
-    global entry_strategy
-    global max_pnl
-    global signal_count
+    global position_open, entry_price, entry_time, entry_market
+    global entry_big_trend, entry_strategy, max_pnl, signal_count
 
     if not strategy_enabled:
         return
@@ -524,7 +474,7 @@ def check_entry(df_5m, big_trend, market, strategy, score):
     if strategy.startswith("NO_TRADE"):
         return
 
-    if score < 70:
+    if score < ENTRY_SCORE:
         return
 
     now = df_5m.iloc[-1]
@@ -541,6 +491,7 @@ def check_entry(df_5m, big_trend, market, strategy, score):
 
     send_telegram(
         f"🟢 BTC 진입 관심 신호\n\n"
+        f"모드: DATA_COLLECTION\n"
         f"장기추세: {big_trend}\n"
         f"단기장세: {market}\n"
         f"전략: {strategy}\n"
@@ -554,35 +505,18 @@ def check_entry(df_5m, big_trend, market, strategy, score):
 
 
 def detect_anomaly():
-    global signal_count
-    global error_count
-    global market_change_count
+    global signal_count, error_count, market_change_count
 
-    if signal_count >= 10:
-        send_telegram(
-            f"⚠️ 이상감지\n\n"
-            f"최근 신호가 과도하게 발생 중\n"
-            f"신호 수: {signal_count}\n"
-            f"조치: 진입 조건 강화 검토 필요"
-        )
+    if signal_count >= 15:
+        send_telegram(f"⚠️ 이상감지\n\n최근 신호 과다\n신호 수: {signal_count}")
         signal_count = 0
 
-    if market_change_count >= 8:
-        send_telegram(
-            f"⚠️ 이상감지\n\n"
-            f"시장상태가 너무 자주 바뀜\n"
-            f"변경 수: {market_change_count}\n"
-            f"조치: 혼조장 가능성, 실거래 보수 권장"
-        )
+    if market_change_count >= 10:
+        send_telegram(f"⚠️ 이상감지\n\n시장상태 변경 과다\n변경 수: {market_change_count}")
         market_change_count = 0
 
     if error_count >= 5:
-        send_telegram(
-            f"🚨 시스템 위험\n\n"
-            f"오류 반복 발생\n"
-            f"오류 수: {error_count}\n"
-            f"조치: Railway 로그 확인 필요"
-        )
+        send_telegram(f"🚨 시스템 위험\n\n오류 반복 발생\n오류 수: {error_count}")
         error_count = 0
 
 
@@ -592,7 +526,7 @@ def send_hourly_report(df_5m, big_trend, market, strategy, score):
 
     send_telegram(
         f"📈 1시간 시스템 리포트\n\n"
-        f"심볼: {SYMBOL}\n"
+        f"모드: DATA_COLLECTION\n"
         f"장기추세: {big_trend}\n"
         f"단기장세: {market}\n"
         f"전략: {strategy}\n"
@@ -606,15 +540,12 @@ def send_hourly_report(df_5m, big_trend, market, strategy, score):
         f"총 거래: {total_trades}\n"
         f"승률: {get_win_rate()}%\n"
         f"누적손익: {cumulative_pnl:.4f}%\n"
-        f"연속손실: {consecutive_losses}\n"
-        f"오류 수: {error_count}"
+        f"연속손실: {consecutive_losses}"
     )
 
 
 def run_bot():
-    global last_market
-    global last_big_trend
-    global market_change_count
+    global last_market, last_big_trend, market_change_count
 
     df_5m = calculate_indicators(get_klines(Client.KLINE_INTERVAL_5MINUTE, 220))
     df_1h = calculate_indicators(get_klines(Client.KLINE_INTERVAL_1HOUR, 220))
@@ -633,26 +564,21 @@ def run_bot():
             f"전략: {strategy}\n"
             f"점수: {score}"
         )
-
         last_big_trend = big_trend
         last_market = market
         market_change_count += 1
 
     check_exit(df_5m, big_trend, market, score)
     check_entry(df_5m, big_trend, market, strategy, score)
-
     write_log(df_5m, big_trend, market, strategy, "WATCH", score, "-")
 
-    print(
-        f"{big_trend} | {market} | {strategy} | "
-        f"SCORE={score} | POSITION={position_open}"
-    )
+    print(f"{big_trend} | {market} | {strategy} | SCORE={score} | POSITION={position_open}")
 
     return df_5m, big_trend, market, strategy, score
 
 
 init_sheet_header()
-send_telegram("🚀 장기추세 + 장세별 익절손절 BTC 전략봇 시작")
+send_telegram("🚀 DATA_COLLECTION 모드 BTC 전략봇 시작")
 
 while True:
     try:
