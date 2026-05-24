@@ -4,6 +4,6 @@ WORKDIR /app
 
 COPY . .
 
-RUN pip install python-binance requests pandas numpy
+RUN pip install --no-cache-dir -r requirements.txt
 
 CMD ["python", "main.py"]
