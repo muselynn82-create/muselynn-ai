@@ -122,6 +122,8 @@ HEADERS = [
     "exit_reason", "strategy_enabled"
 ]
 
+def init_sheet_header():
+    sheet.update("A1:V1", [HEADERS])
 
 spreadsheet = gc.open(GOOGLE_SHEET_NAME)
 
