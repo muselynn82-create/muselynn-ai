@@ -110,8 +110,14 @@ HEADERS = [
 ]
 
 
-def init_sheet_header():
-    sheet.update("A1:V1", [HEADERS])
+spreadsheet = gc.open(GOOGLE_SHEET_NAME)
+
+sheet = spreadsheet.worksheet("BTC_TRADING_LOG")
+
+try:
+    state_sheet = spreadsheet.worksheet("STATE")
+except gspread.WorksheetNotFound:
+    state_sheet = spreadsheet.add_worksheet(title="STATE", rows=30, cols=2)
 
 
 def safe_float(value, default=0.0):
