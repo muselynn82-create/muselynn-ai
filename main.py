@@ -43,7 +43,7 @@ sheet = gc.open(GOOGLE_SHEET_NAME).sheet1
 
 SYMBOL = "BTCUSDT"
 
-ENTRY_SCORE = 55
+ENTRY_SCORE = 45
 FEE_ROUND_TRIP = 0.20
 MAX_CONSECUTIVE_LOSSES = 5
 
@@ -297,13 +297,14 @@ def calculate_score(df_5m, big_trend, market, strategy):
             score += 20
 
     elif strategy == "BEAR_SCALP":
-          return {
-              "take_profit": 0.25,
-              "stop_loss": -0.25,
-              "trail_start": 0.15,
-              "trail_back": 0.10,
-              "max_hold_minutes": 12
-          }
+        if rsi < 35:
+            score += 35
+        if price <= now["bb_lower"] * 1.015:
+            score += 30
+        if volume_ratio >= 0.5:
+            score += 15
+        if prev["close"] < prev["bb_lower"] or price > now["bb_lower"]:
+            score += 15
 
     return score
 
@@ -325,7 +326,7 @@ def get_risk_params(strategy):
         return {"take_profit": 0.75, "stop_loss": -0.55, "trail_start": 0.45, "trail_back": 0.28, "max_hold_minutes": 60}
 
     if strategy == "BEAR_SCALP":
-        return {"take_profit": 0.35, "stop_loss": -0.32, "trail_start": 0.22, "trail_back": 0.16, "max_hold_minutes": 18}
+        return {"take_profit": 0.25, "stop_loss": -0.25, "trail_start": 0.15, "trail_back": 0.10, "max_hold_minutes": 12}
 
     return {"take_profit": 0, "stop_loss": 0, "trail_start": 0, "trail_back": 0, "max_hold_minutes": 0}
 
