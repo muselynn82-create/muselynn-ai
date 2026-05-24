@@ -9,9 +9,11 @@ from binance.client import Client
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+
 def now_kst():
     return datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
-    
+
+
 API_KEY = os.getenv("BINANCE_API_KEY")
 API_SECRET = os.getenv("BINANCE_SECRET_KEY")
 
@@ -44,7 +46,14 @@ creds_dict = {
 
 credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 gc = gspread.authorize(credentials)
-sheet = gc.open(GOOGLE_SHEET_NAME).sheet1
+
+spreadsheet = gc.open(GOOGLE_SHEET_NAME)
+sheet = spreadsheet.sheet1
+
+try:
+    state_sheet = spreadsheet.worksheet("STATE")
+except gspread.WorksheetNotFound:
+    state_sheet = spreadsheet.add_worksheet(title="STATE", rows=30, cols=2)
 
 SYMBOL = "BTCUSDT"
 
@@ -99,6 +108,84 @@ def init_sheet_header():
     sheet.update("A1:V1", [HEADERS])
 
 
+def safe_float(value, default=0.0):
+    try:
+        if value in ["", None]:
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def safe_int(value, default=0):
+    try:
+        if value in ["", None]:
+            return default
+        return int(float(value))
+    except Exception:
+        return default
+
+
+def safe_bool(value, default=False):
+    if value in ["True", "TRUE", "true", True]:
+        return True
+    if value in ["False", "FALSE", "false", False]:
+        return False
+    return default
+
+
+def load_state():
+    global position_open, entry_price, entry_time, entry_market
+    global entry_big_trend, entry_strategy, max_pnl, last_exit_time
+    global strategy_enabled, total_trades, win_trades, loss_trades
+    global consecutive_losses, cumulative_pnl
+
+    rows = state_sheet.get_all_records()
+
+    if not rows:
+        save_state()
+        return
+
+    state = {str(row["key"]): row["value"] for row in rows}
+
+    position_open = safe_bool(state.get("position_open"), False)
+    entry_price = safe_float(state.get("entry_price"), 0.0)
+    entry_time = state.get("entry_time") or None
+    entry_market = state.get("entry_market") or None
+    entry_big_trend = state.get("entry_big_trend") or None
+    entry_strategy = state.get("entry_strategy") or None
+    max_pnl = safe_float(state.get("max_pnl"), 0.0)
+    last_exit_time = state.get("last_exit_time") or None
+
+    strategy_enabled = safe_bool(state.get("strategy_enabled"), True)
+    total_trades = safe_int(state.get("total_trades"), 0)
+    win_trades = safe_int(state.get("win_trades"), 0)
+    loss_trades = safe_int(state.get("loss_trades"), 0)
+    consecutive_losses = safe_int(state.get("consecutive_losses"), 0)
+    cumulative_pnl = safe_float(state.get("cumulative_pnl"), 0.0)
+
+
+def save_state():
+    state_values = [
+        ["position_open", str(position_open)],
+        ["entry_price", str(entry_price)],
+        ["entry_time", entry_time or ""],
+        ["entry_market", entry_market or ""],
+        ["entry_big_trend", entry_big_trend or ""],
+        ["entry_strategy", entry_strategy or ""],
+        ["max_pnl", str(max_pnl)],
+        ["last_exit_time", last_exit_time or ""],
+        ["strategy_enabled", str(strategy_enabled)],
+        ["total_trades", str(total_trades)],
+        ["win_trades", str(win_trades)],
+        ["loss_trades", str(loss_trades)],
+        ["consecutive_losses", str(consecutive_losses)],
+        ["cumulative_pnl", str(cumulative_pnl)]
+    ]
+
+    state_sheet.update("A1:B15", [["key", "value"]] + state_values)
+
+
 def save_log(data):
     sheet.append_row([
         data["time"], data["symbol"], data["big_trend"], data["market"],
@@ -120,8 +207,11 @@ def get_win_rate():
 def get_hold_minutes():
     if not entry_time:
         return 0
+
     entry_ts = time.mktime(time.strptime(entry_time, "%Y-%m-%d %H:%M:%S"))
-    return (time.time() - entry_ts) / 60
+    now_ts = time.mktime(time.strptime(now_kst(), "%Y-%m-%d %H:%M:%S"))
+
+    return (now_ts - entry_ts) / 60
 
 
 def in_cooldown():
@@ -129,7 +219,9 @@ def in_cooldown():
         return False
 
     exit_ts = time.mktime(time.strptime(last_exit_time, "%Y-%m-%d %H:%M:%S"))
-    minutes = (time.time() - exit_ts) / 60
+    now_ts = time.mktime(time.strptime(now_kst(), "%Y-%m-%d %H:%M:%S"))
+
+    minutes = (now_ts - exit_ts) / 60
 
     return minutes < REENTRY_COOLDOWN_MINUTES
 
@@ -436,8 +528,11 @@ def close_position(df_5m, big_trend, market, score, exit_reason):
     entry_strategy = None
     max_pnl = 0.0
 
+    save_state()
+
     if consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
         strategy_enabled = False
+        save_state()
         send_telegram(
             f"🚨 전략 자동 OFF\n\n"
             f"사유: {consecutive_losses}연속 손실\n"
@@ -458,6 +553,7 @@ def check_exit(df_5m, big_trend, market, score):
 
     if gross_pnl > max_pnl:
         max_pnl = gross_pnl
+        save_state()
 
     params = get_risk_params(entry_strategy)
 
@@ -515,6 +611,8 @@ def check_entry(df_5m, big_trend, market, strategy, score):
     entry_big_trend = big_trend
     entry_strategy = strategy
     max_pnl = 0.0
+
+    save_state()
 
     send_telegram(
         f"🟢 BTC 진입 관심 신호\n\n"
@@ -605,7 +703,15 @@ def run_bot():
 
 
 init_sheet_header()
-send_telegram("🚀 FILTERED_DATA_COLLECTION 모드 BTC 전략봇 시작")
+load_state()
+
+send_telegram(
+    f"🚀 FILTERED_DATA_COLLECTION 모드 BTC 전략봇 시작\n\n"
+    f"복구 포지션: {position_open}\n"
+    f"진입가: {entry_price}\n"
+    f"전략: {entry_strategy}\n"
+    f"누적손익: {cumulative_pnl:.4f}%"
+)
 
 while True:
     try:
