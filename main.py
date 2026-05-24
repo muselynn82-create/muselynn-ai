@@ -43,13 +43,17 @@ sheet = gc.open(GOOGLE_SHEET_NAME).sheet1
 
 SYMBOL = "BTCUSDT"
 
-ENTRY_SCORE = 45
+ENTRY_SCORE = 60
 FEE_ROUND_TRIP = 0.20
+
+REENTRY_COOLDOWN_MINUTES = 15
+MIN_HOLD_MINUTES = 5
 MAX_CONSECUTIVE_LOSSES = 5
 
 last_report_time = time.time()
 last_market = None
 last_big_trend = None
+last_exit_time = None
 
 position_open = False
 entry_price = 0.0
@@ -106,6 +110,23 @@ def get_win_rate():
     if total_trades == 0:
         return 0.0
     return round((win_trades / total_trades) * 100, 2)
+
+
+def get_hold_minutes():
+    if not entry_time:
+        return 0
+    entry_ts = time.mktime(time.strptime(entry_time, "%Y-%m-%d %H:%M:%S"))
+    return (time.time() - entry_ts) / 60
+
+
+def in_cooldown():
+    if not last_exit_time:
+        return False
+
+    exit_ts = time.mktime(time.strptime(last_exit_time, "%Y-%m-%d %H:%M:%S"))
+    minutes = (time.time() - exit_ts) / 60
+
+    return minutes < REENTRY_COOLDOWN_MINUTES
 
 
 def get_gross_pnl(price):
@@ -232,7 +253,7 @@ def get_strategy(big_trend, market):
             return "SIDE_DEEP_REBOUND"
 
     if big_trend == "BIG_BEAR":
-        if market in ["SIDE", "BEAR", "VOLATILE"]:
+        if market in ["SIDE", "BEAR"]:
             return "BEAR_SCALP"
 
     return "NO_TRADE"
@@ -250,83 +271,83 @@ def calculate_score(df_5m, big_trend, market, strategy):
 
     if strategy == "SIDE_RSI_BB":
         if rsi < 38:
-            score += 30
-        if price <= now["bb_lower"] * 1.006:
+            score += 25
+        if price <= now["bb_lower"] * 1.004:
             score += 25
         if price > now["bb_lower"]:
             score += 20
         if market == "SIDE":
             score += 15
-        if volume_ratio >= 0.8:
-            score += 10
+        if volume_ratio >= 0.9:
+            score += 15
 
     elif strategy == "SIDE_DEEP_REBOUND":
-        if rsi < 30:
+        if rsi < 28:
             score += 35
-        if price <= now["bb_lower"] * 1.004:
+        if price <= now["bb_lower"] * 1.003:
             score += 30
-        if volume_ratio >= 0.8:
+        if volume_ratio >= 0.9:
             score += 15
 
     elif strategy == "BULL_PULLBACK":
-        if 35 <= rsi <= 58:
+        if 35 <= rsi <= 55:
             score += 35
         if price > now["ema50"]:
             score += 25
-        if price <= now["ema20"] * 1.006:
+        if price <= now["ema20"] * 1.004:
             score += 25
         if big_trend == "BIG_BULL":
             score += 15
 
     elif strategy == "BULL_PULLBACK_LIGHT":
-        if 38 <= rsi <= 58:
+        if 38 <= rsi <= 55:
             score += 30
         if price > now["ema50"]:
             score += 25
-        if price <= now["ema20"] * 1.006:
+        if price <= now["ema20"] * 1.004:
             score += 20
-        if volume_ratio >= 0.7:
+        if volume_ratio >= 0.9:
             score += 10
 
     elif strategy == "BULL_DEEP_PULLBACK":
-        if rsi < 32:
+        if rsi < 30:
             score += 40
-        if price <= now["bb_lower"] * 1.006:
+        if price <= now["bb_lower"] * 1.004:
             score += 30
         if price > now["ema100"]:
             score += 20
 
     elif strategy == "BEAR_SCALP":
-        if rsi < 35:
+        if rsi < 30:
             score += 35
-        if price <= now["bb_lower"] * 1.015:
+        if price <= now["bb_lower"] * 1.006:
             score += 30
-        if volume_ratio >= 0.5:
-            score += 15
-        if prev["close"] < prev["bb_lower"] or price > now["bb_lower"]:
-            score += 15
+        if volume_ratio >= 0.9:
+            score += 20
+        if prev["close"] < prev["bb_lower"] and price > now["bb_lower"]:
+            score += 20
 
     return score
 
 
 def get_risk_params(strategy):
     if strategy == "SIDE_RSI_BB":
-        return {"take_profit": 0.55, "stop_loss": -0.45, "trail_start": 0.35, "trail_back": 0.22, "max_hold_minutes": 35}
+        return {"take_profit": 0.75, "stop_loss": -0.45, "trail_start": 0.50, "trail_back": 0.25, "max_hold_minutes": 45}
 
     if strategy == "SIDE_DEEP_REBOUND":
-        return {"take_profit": 0.45, "stop_loss": -0.40, "trail_start": 0.28, "trail_back": 0.20, "max_hold_minutes": 25}
+        return {"take_profit": 0.60, "stop_loss": -0.40, "trail_start": 0.40, "trail_back": 0.22, "max_hold_minutes": 35}
 
     if strategy == "BULL_PULLBACK":
-        return {"take_profit": 1.20, "stop_loss": -0.70, "trail_start": 0.70, "trail_back": 0.35, "max_hold_minutes": 150}
+        return {"take_profit": 1.30, "stop_loss": -0.70, "trail_start": 0.80, "trail_back": 0.35, "max_hold_minutes": 150}
 
     if strategy == "BULL_PULLBACK_LIGHT":
-        return {"take_profit": 0.85, "stop_loss": -0.55, "trail_start": 0.50, "trail_back": 0.30, "max_hold_minutes": 80}
+        return {"take_profit": 0.90, "stop_loss": -0.55, "trail_start": 0.60, "trail_back": 0.30, "max_hold_minutes": 90}
 
     if strategy == "BULL_DEEP_PULLBACK":
-        return {"take_profit": 0.75, "stop_loss": -0.55, "trail_start": 0.45, "trail_back": 0.28, "max_hold_minutes": 60}
+        return {"take_profit": 0.85, "stop_loss": -0.55, "trail_start": 0.55, "trail_back": 0.28, "max_hold_minutes": 75}
 
     if strategy == "BEAR_SCALP":
-        return {"take_profit": 0.25, "stop_loss": -0.25, "trail_start": 0.15, "trail_back": 0.10, "max_hold_minutes": 12}
+        return {"take_profit": 0.50, "stop_loss": -0.35, "trail_start": 0.35, "trail_back": 0.18, "max_hold_minutes": 25}
 
     return {"take_profit": 0, "stop_loss": 0, "trail_start": 0, "trail_back": 0, "max_hold_minutes": 0}
 
@@ -366,6 +387,7 @@ def close_position(df_5m, big_trend, market, score, exit_reason):
     global entry_big_trend, entry_strategy, max_pnl
     global signal_count, total_trades, win_trades, loss_trades
     global consecutive_losses, cumulative_pnl, strategy_enabled
+    global last_exit_time
 
     now = df_5m.iloc[-1]
     price = now["close"]
@@ -399,6 +421,8 @@ def close_position(df_5m, big_trend, market, score, exit_reason):
     write_log(df_5m, big_trend, market, entry_strategy, "SELL", score, exit_reason)
 
     signal_count += 1
+    last_exit_time = time.strftime("%Y-%m-%d %H:%M:%S")
+
     position_open = False
     entry_price = 0.0
     entry_time = None
@@ -424,8 +448,8 @@ def check_exit(df_5m, big_trend, market, score):
 
     now = df_5m.iloc[-1]
     price = now["close"]
-    rsi = now["rsi"]
     gross_pnl = get_gross_pnl(price)
+    hold_minutes = get_hold_minutes()
 
     if gross_pnl > max_pnl:
         max_pnl = gross_pnl
@@ -436,6 +460,9 @@ def check_exit(df_5m, big_trend, market, score):
         close_position(df_5m, big_trend, market, score, "STOP_LOSS")
         return
 
+    if hold_minutes < MIN_HOLD_MINUTES:
+        return
+
     if gross_pnl >= params["take_profit"]:
         close_position(df_5m, big_trend, market, score, "TAKE_PROFIT")
         return
@@ -444,20 +471,12 @@ def check_exit(df_5m, big_trend, market, score):
         close_position(df_5m, big_trend, market, score, "TRAILING_STOP")
         return
 
-    if entry_time:
-        entry_ts = time.mktime(time.strptime(entry_time, "%Y-%m-%d %H:%M:%S"))
-        hold_minutes = (time.time() - entry_ts) / 60
-
-        if hold_minutes >= params["max_hold_minutes"]:
-            close_position(df_5m, big_trend, market, score, "TIME_EXIT")
-            return
+    if hold_minutes >= params["max_hold_minutes"]:
+        close_position(df_5m, big_trend, market, score, "TIME_EXIT")
+        return
 
     if big_trend == "BIG_CRASH":
         close_position(df_5m, big_trend, market, score, "BIG_CRASH_EXIT")
-        return
-
-    if entry_strategy in ["SIDE_RSI_BB", "SIDE_DEEP_REBOUND", "BEAR_SCALP"] and rsi > 58:
-        close_position(df_5m, big_trend, market, score, "RSI_EXIT")
         return
 
 
@@ -469,6 +488,9 @@ def check_entry(df_5m, big_trend, market, strategy, score):
         return
 
     if position_open:
+        return
+
+    if in_cooldown():
         return
 
     if strategy.startswith("NO_TRADE"):
@@ -491,7 +513,7 @@ def check_entry(df_5m, big_trend, market, strategy, score):
 
     send_telegram(
         f"🟢 BTC 진입 관심 신호\n\n"
-        f"모드: DATA_COLLECTION\n"
+        f"모드: FILTERED_DATA_COLLECTION\n"
         f"장기추세: {big_trend}\n"
         f"단기장세: {market}\n"
         f"전략: {strategy}\n"
@@ -526,7 +548,7 @@ def send_hourly_report(df_5m, big_trend, market, strategy, score):
 
     send_telegram(
         f"📈 1시간 시스템 리포트\n\n"
-        f"모드: DATA_COLLECTION\n"
+        f"모드: FILTERED_DATA_COLLECTION\n"
         f"장기추세: {big_trend}\n"
         f"단기장세: {market}\n"
         f"전략: {strategy}\n"
@@ -578,7 +600,7 @@ def run_bot():
 
 
 init_sheet_header()
-send_telegram("🚀 DATA_COLLECTION 모드 BTC 전략봇 시작")
+send_telegram("🚀 FILTERED_DATA_COLLECTION 모드 BTC 전략봇 시작")
 
 while True:
     try:
