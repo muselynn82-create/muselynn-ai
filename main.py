@@ -47,6 +47,13 @@ LIMIT = 120
 
 last_signal = None
 last_market = None
+last_report_time = time.time()
+
+signal_count = 0
+error_count = 0
+market_change_count = 0
+
+trade_history = []
 
 
 def send_telegram(message):
@@ -211,9 +218,73 @@ def write_status_log(df, market, score):
     })
 
 
+def send_hourly_report(df):
+    now = df.iloc[-1]
+
+    price = now["close"]
+    rsi = now["rsi"]
+    market = detect_market(df)
+    score = calculate_score(df, market)
+
+    report = (
+        f"📈 1시간 시스템 리포트\n\n"
+        f"심볼: {SYMBOL}\n"
+        f"현재 시장상태: {market}\n"
+        f"현재 가격: {price:.2f}\n"
+        f"현재 RSI: {rsi:.2f}\n"
+        f"현재 진입점수: {score}\n\n"
+        f"최근 신호 수: {signal_count}\n"
+        f"시장상태 변경 수: {market_change_count}\n"
+        f"오류 수: {error_count}\n"
+        f"누적 BUY/SELL 기록 수: {len(trade_history)}\n\n"
+        f"시스템 상태: 정상 감시 중"
+    )
+
+    send_telegram(report)
+
+
+def detect_anomaly():
+    global signal_count
+    global error_count
+    global market_change_count
+
+    if signal_count >= 10:
+        send_telegram(
+            f"⚠️ 이상감지\n\n"
+            f"최근 신호가 과도하게 발생 중\n"
+            f"신호 수: {signal_count}\n"
+            f"조치: 진입 조건 강화 검토 필요"
+        )
+
+        signal_count = 0
+
+    if market_change_count >= 8:
+        send_telegram(
+            f"⚠️ 이상감지\n\n"
+            f"시장상태가 너무 자주 바뀌고 있음\n"
+            f"변경 수: {market_change_count}\n"
+            f"조치: 횡보/혼조장 가능성, 실거래 시 진입 보수 권장"
+        )
+
+        market_change_count = 0
+
+    if error_count >= 5:
+        send_telegram(
+            f"🚨 시스템 위험\n\n"
+            f"오류가 반복 발생 중\n"
+            f"오류 수: {error_count}\n"
+            f"조치: Railway 로그 확인 필요"
+        )
+
+        error_count = 0
+
+
 def check_signal(df):
     global last_signal
     global last_market
+    global signal_count
+    global market_change_count
+    global trade_history
 
     now = df.iloc[-1]
 
@@ -233,6 +304,7 @@ def check_signal(df):
         )
 
         last_market = market
+        market_change_count += 1
 
     if score >= 70 and last_signal != "BUY":
         send_telegram(
@@ -256,6 +328,16 @@ def check_signal(df):
             "ema100": round(now["ema100"], 2)
         })
 
+        trade_history.append({
+            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "signal": "BUY",
+            "market": market,
+            "price": round(price, 2),
+            "rsi": round(rsi, 2),
+            "score": score
+        })
+
+        signal_count += 1
         last_signal = "BUY"
 
     if last_signal == "BUY":
@@ -280,6 +362,16 @@ def check_signal(df):
                 "ema100": round(now["ema100"], 2)
             })
 
+            trade_history.append({
+                "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "signal": "SELL",
+                "market": market,
+                "price": round(price, 2),
+                "rsi": round(rsi, 2),
+                "score": score
+            })
+
+            signal_count += 1
             last_signal = "SELL"
 
     write_status_log(df, market, score)
@@ -290,15 +382,23 @@ def check_signal(df):
 
 
 init_sheet_header()
-send_telegram("🚀 Google Sheets 기록형 BTC 5분봉 전략봇 시작")
+send_telegram("🚀 이상감지 + 1시간 리포트형 BTC 5분봉 전략봇 시작")
 
 while True:
     try:
         df = get_klines()
         df = calculate_indicators(df)
         check_signal(df)
+
+        detect_anomaly()
+
+        if time.time() - last_report_time >= 3600:
+            send_hourly_report(df)
+            last_report_time = time.time()
+
         time.sleep(60)
 
     except Exception as e:
+        error_count += 1
         send_telegram(f"❌ 오류 발생\n{str(e)}")
         time.sleep(60)
