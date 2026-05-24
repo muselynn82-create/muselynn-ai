@@ -578,7 +578,7 @@ def run_bot():
     strategy = get_strategy(big_trend, market)
     score = calculate_score(df_5m, big_trend, market, strategy)
 
-    if big_trend != last_big_trend or market != last_market:
+    if (big_trend != last_big_trend or market != last_market) and score >= 50:
         send_telegram(
             f"📊 시장상태 변경\n\n"
             f"장기추세: {big_trend}\n"
