@@ -457,24 +457,24 @@ def calculate_score(df_5m, big_trend, market, strategy):
 
 def get_risk_params(strategy):
     if strategy == "SIDE_RSI_BB":
-        return {"take_profit": 0.75, "stop_loss": -0.45, "trail_start": 0.50, "trail_back": 0.25, "max_hold_minutes": 45}
+        return {"take_profit": 0.75, "stop_loss": -0.45, "trail_start": 0.50, "trail_back": 0.25}
 
     if strategy == "SIDE_DEEP_REBOUND":
-        return {"take_profit": 0.60, "stop_loss": -0.40, "trail_start": 0.40, "trail_back": 0.22, "max_hold_minutes": 35}
+        return {"take_profit": 0.60, "stop_loss": -0.40, "trail_start": 0.40, "trail_back": 0.22}
 
     if strategy == "BULL_PULLBACK":
-        return {"take_profit": 1.30, "stop_loss": -0.70, "trail_start": 0.80, "trail_back": 0.35, "max_hold_minutes": 150}
+        return {"take_profit": 1.30, "stop_loss": -0.70, "trail_start": 0.80, "trail_back": 0.35}
 
     if strategy == "BULL_PULLBACK_LIGHT":
-        return {"take_profit": 0.90, "stop_loss": -0.55, "trail_start": 0.60, "trail_back": 0.30, "max_hold_minutes": 90}
+        return {"take_profit": 0.90, "stop_loss": -0.55, "trail_start": 0.60, "trail_back": 0.30}
 
     if strategy == "BULL_DEEP_PULLBACK":
-        return {"take_profit": 0.85, "stop_loss": -0.55, "trail_start": 0.55, "trail_back": 0.28, "max_hold_minutes": 75}
+        return {"take_profit": 0.85, "stop_loss": -0.55, "trail_start": 0.55, "trail_back": 0.28}
 
     if strategy == "BEAR_SCALP":
-        return {"take_profit": 0.50, "stop_loss": -0.35, "trail_start": 0.35, "trail_back": 0.18, "max_hold_minutes": 25}
+        return {"take_profit": 0.50, "stop_loss": -0.35, "trail_start": 0.35, "trail_back": 0.18}
 
-    return {"take_profit": 0, "stop_loss": 0, "trail_start": 0, "trail_back": 0, "max_hold_minutes": 0}
+    return {"take_profit": 0, "stop_loss": 0, "trail_start": 0, "trail_back": 0}
 
 
 def write_log(df_5m, big_trend, market, strategy, signal, score, exit_reason="-"):
@@ -598,10 +598,6 @@ def check_exit(df_5m, big_trend, market, score):
 
     if max_pnl >= params["trail_start"] and gross_pnl <= max_pnl - params["trail_back"]:
         close_position(df_5m, big_trend, market, score, "TRAILING_STOP")
-        return
-
-    if hold_minutes >= params["max_hold_minutes"]:
-        close_position(df_5m, big_trend, market, score, "TIME_EXIT")
         return
 
     if big_trend == "BIG_CRASH":
