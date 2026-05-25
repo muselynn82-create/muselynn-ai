@@ -659,17 +659,17 @@ min_net_for_trailing = {
     "BEAR_SCALP": 0.12
 }.get(entry_strategy, 0.20)
 
-if (
-    net_pnl >= min_net_for_trailing and
-    max_pnl >= params["trail_start"] and
-    gross_pnl <= max_pnl - params["trail_back"]
-):
-    close_position(df_5m, big_trend, market, score, "TRAILING_STOP")
-    return
+        if (
+            net_pnl >= min_net_for_trailing and
+            max_pnl >= params["trail_start"] and
+            gross_pnl <= max_pnl - params["trail_back"]
+        ):
+            close_position(df_5m, big_trend, market, score, "TRAILING_STOP")
+            return
 
-    if big_trend == "BIG_CRASH":
-        close_position(df_5m, big_trend, market, score, "BIG_CRASH_EXIT")
-        return
+        if big_trend == "BIG_CRASH":
+            close_position(df_5m, big_trend, market, score, "BIG_CRASH_EXIT")
+            return
 
 
 def check_entry(df_5m, big_trend, market, strategy, score):
