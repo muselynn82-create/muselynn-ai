@@ -179,27 +179,8 @@ def detect_short_market(now):
 
 
 def get_strategy(big_trend, market):
-    if big_trend == "BIG_CRASH":
-        return "NO_TRADE_CRASH"
-
     if big_trend == "BIG_BULL":
-        if market in ["BULL", "SIDE"]:
-            return "BULL_PULLBACK"
-        if market == "BEAR":
-            return "BULL_DEEP_PULLBACK"
-
-    if big_trend == "BIG_SIDE":
-        if market == "SIDE":
-            return "SIDE_RSI_BB"
-        if market == "BULL":
-            return "BULL_DEEP_PULLBACK"
-        if market == "BEAR":
-            return "SIDE_DEEP_REBOUND"
-        if big_trend == "BIG_SIDE":
-            return "NO_TRADE"
-
-    if big_trend == "BIG_BEAR":
-        return "NO_TRADE"
+        return "BULL_DEEP_PULLBACK"
 
     return "NO_TRADE"
 
@@ -214,7 +195,7 @@ def calculate_score(now, prev, big_trend, market, strategy):
     if strategy == "SIDE_RSI_BB":
         if rsi < 35:
             score += 25
-        if price <= now["bb_lower"] * 1.004:
+        if price <= now["bb_lower"] * 1.002:
             score += 25
         if price <= now["bb_lower"] * 1.003:
             score += 20
@@ -254,9 +235,9 @@ def calculate_score(now, prev, big_trend, market, strategy):
             score += 10
 
     elif strategy == "BULL_DEEP_PULLBACK":
-        if rsi < 30:
+        if rsi < 28:
             score += 40
-        if price <= now["bb_lower"] * 1.004:
+        if price <= now["bb_lower"] * 1.002:
             score += 30
         if price > now["ema100"]:
             score += 20
@@ -348,7 +329,7 @@ def get_min_net_for_trailing(strategy):
 # BACKTEST ENGINE
 # =========================
 
-def run_backtest(df_5m, df_1h, df_4h):
+def run_backtest(df_15m, df_1h, df_4h):
     position_open = False
     entry_price = 0.0
     entry_time = None
@@ -382,9 +363,9 @@ def run_backtest(df_5m, df_1h, df_4h):
     i1 = 0
     i4 = 0
 
-    for i in range(220, len(df_5m)):
-        now = df_5m.iloc[i]
-        prev = df_5m.iloc[i - 1]
+    for i in range(220, len(df_15m)):
+        now = df_15m.iloc[i]
+        prev = df_15m.iloc[i - 1]
         current_time = now["datetime"]
 
         while i1 + 1 < len(df_1h_times) and df_1h_times[i1 + 1] <= current_time:
@@ -589,14 +570,14 @@ def main():
 
     print("Backtest started:", now_kst())
 
-    df_5m = calculate_indicators(fetch_klines(SYMBOL, Client.KLINE_INTERVAL_5MINUTE, start_dt, end_dt))
+    df_15m = calculate_indicators(fetch_klines(SYMBOL, Client.KLINE_INTERVAL_15MINUTE, start_dt, end_dt))
     df_1h = calculate_indicators(fetch_klines(SYMBOL, Client.KLINE_INTERVAL_1HOUR, start_dt, end_dt))
     df_4h = calculate_indicators(fetch_klines(SYMBOL, Client.KLINE_INTERVAL_4HOUR, start_dt, end_dt))
 
     cutoff = datetime.now(KST) - timedelta(days=BACKTEST_DAYS)
-    df_5m = df_5m[df_5m["datetime"] >= cutoff].reset_index(drop=True)
+    df_15m = df_15m[df_15m["datetime"] >= cutoff].reset_index(drop=True)
 
-    trades_df, equity_df, max_drawdown = run_backtest(df_5m, df_1h, df_4h)
+    trades_df, equity_df, max_drawdown = run_backtest(df_15m, df_1h, df_4h)
 
     trades_df.to_csv(OUTPUT_TRADES, index=False, encoding="utf-8-sig")
     equity_df.to_csv(OUTPUT_EQUITY, index=False, encoding="utf-8-sig")
