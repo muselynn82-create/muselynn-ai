@@ -192,9 +192,11 @@ def get_strategy(big_trend, market):
         if market == "SIDE":
             return "SIDE_RSI_BB"
         if market == "BULL":
-            return "BULL_PULLBACK_LIGHT"
+            return "BULL_DEEP_PULLBACK"
         if market == "BEAR":
             return "SIDE_DEEP_REBOUND"
+        if big_trend == "BIG_SIDE":
+            return "NO_TRADE"
 
     if big_trend == "BIG_BEAR":
         return "NO_TRADE"
