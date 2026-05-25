@@ -477,8 +477,8 @@ def run_backtest(df_5m, df_1h, df_4h):
 
                 max_pnl = 0.0
 
-                if consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
-                    strategy_enabled = False
+                # if consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
+                #     strategy_enabled = False
 
         # ENTRY
         if not position_open and strategy_enabled:
