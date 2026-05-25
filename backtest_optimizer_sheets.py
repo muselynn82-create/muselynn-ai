@@ -34,12 +34,11 @@ RUN_LOG_SHEET_NAME = "OPTIMIZER_RUN_LOG"
 # 너무 넓히면 오래 걸리니 1차 자동 연구 범위
 PARAM_GRID = {
     "entry_score": [70, 80],
-    "rsi_limit": [26, 30],
-    "volume_ratio": [1.0, 1.5],
-    "take_profit": [1.2, 1.8],
-    "stop_loss": [-0.7, -1.0],
-    "trail_start": [0.8, 1.2],
-    "trail_back": [0.4, 0.7],
+    "rsi_limit": [26, 27, 28],
+    "take_profit": [1.2, 1.8, 2.5],
+    "stop_loss": [-1.0, -1.2],
+    "trail_start": [1.0, 1.5],
+    "trail_back": [0.5, 0.7, 1.0],
 }
 
 MIN_TRADES = 10
