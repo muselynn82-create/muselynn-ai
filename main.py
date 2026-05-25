@@ -650,7 +650,11 @@ def check_exit(df_5m, big_trend, market, score):
         close_position(df_5m, big_trend, market, score, "TAKE_PROFIT")
         return
 
-    if max_pnl >= params["trail_start"] and gross_pnl <= max_pnl - params["trail_back"]:
+    if (
+    net_pnl >= 0.15 and
+    max_pnl >= params["trail_start"] and
+    gross_pnl <= max_pnl - params["trail_back"]
+):
         close_position(df_5m, big_trend, market, score, "TRAILING_STOP")
         return
 
