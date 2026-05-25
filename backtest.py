@@ -272,26 +272,60 @@ def calculate_score(now, prev, big_trend, market, strategy):
 
 
 def get_risk_params(strategy):
-    # take_profit is NET PROFIT target after fee.
     if strategy == "SIDE_RSI_BB":
-        return {"take_profit": 0.75, "stop_loss": -0.45, "trail_start": 0.50, "trail_back": 0.25}
+        return {
+            "take_profit": 0.90,
+            "stop_loss": -0.25,
+            "trail_start": 0.55,
+            "trail_back": 0.28
+        }
 
     if strategy == "SIDE_DEEP_REBOUND":
-        return {"take_profit": 0.60, "stop_loss": -0.40, "trail_start": 0.40, "trail_back": 0.22}
+        return {
+            "take_profit": 0.80,
+            "stop_loss": -0.25,
+            "trail_start": 0.50,
+            "trail_back": 0.25
+        }
 
     if strategy == "BULL_PULLBACK":
-        return {"take_profit": 1.30, "stop_loss": -0.70, "trail_start": 0.80, "trail_back": 0.35}
+        return {
+            "take_profit": 1.50,
+            "stop_loss": -0.35,
+            "trail_start": 0.90,
+            "trail_back": 0.40
+        }
 
     if strategy == "BULL_PULLBACK_LIGHT":
-        return {"take_profit": 0.90, "stop_loss": -0.55, "trail_start": 0.60, "trail_back": 0.30}
+        return {
+            "take_profit": 1.10,
+            "stop_loss": -0.30,
+            "trail_start": 0.70,
+            "trail_back": 0.32
+        }
 
     if strategy == "BULL_DEEP_PULLBACK":
-        return {"take_profit": 0.85, "stop_loss": -0.55, "trail_start": 0.55, "trail_back": 0.28}
+        return {
+            "take_profit": 1.10,
+            "stop_loss": -0.30,
+            "trail_start": 0.70,
+            "trail_back": 0.32
+        }
 
     if strategy == "BEAR_SCALP":
-        return {"take_profit": 0.50, "stop_loss": -0.35, "trail_start": 0.35, "trail_back": 0.18}
+        return {
+            "take_profit": 0.70,
+            "stop_loss": -0.22,
+            "trail_start": 0.45,
+            "trail_back": 0.22
+        }
 
-    return {"take_profit": 0, "stop_loss": 0, "trail_start": 0, "trail_back": 0}
+    return {
+        "take_profit": 0,
+        "stop_loss": 0,
+        "trail_start": 0,
+        "trail_back": 0
+    }
 
 
 def get_min_net_for_trailing(strategy):
