@@ -1,294 +1,109 @@
 import os
 import time
-import requests
-import pandas as pd
-import gspread
-
-from oauth2client.service_account import ServiceAccountCredentials
-from binance.client import Client
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+import pandas as pd
+from binance.client import Client
 
-def now_kst():
-    return datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
 
+# =========================
+# BACKTEST CONFIG
+# =========================
 
 API_KEY = os.getenv("BINANCE_API_KEY")
 API_SECRET = os.getenv("BINANCE_SECRET_KEY")
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
-GOOGLE_CLIENT_EMAIL = os.getenv("GOOGLE_CLIENT_EMAIL")
-GOOGLE_PRIVATE_KEY = os.getenv("GOOGLE_PRIVATE_KEY").replace("\\n", "\n")
-GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME")
-
 client = Client(API_KEY, API_SECRET)
-
-scope = [
-    "https://spreadsheets.google.com/feeds",
-    "https://www.googleapis.com/auth/drive"
-]
-
-creds_dict = {
-    "type": "service_account",
-    "project_id": os.getenv("GOOGLE_PROJECT_ID"),
-    "private_key_id": os.getenv("GOOGLE_PRIVATE_KEY_ID"),
-    "private_key": GOOGLE_PRIVATE_KEY,
-    "client_email": GOOGLE_CLIENT_EMAIL,
-    "client_id": os.getenv("GOOGLE_CLIENT_ID"),
-    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-    "token_uri": "https://oauth2.googleapis.com/token",
-    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-    "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/{GOOGLE_CLIENT_EMAIL}"
-}
-
-credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-gc = gspread.authorize(credentials)
-
-spreadsheet = gc.open(GOOGLE_SHEET_NAME)
-
-sheet = spreadsheet.worksheet("BTC_TRADING_LOG")
-
-try:
-    state_sheet = spreadsheet.worksheet("STATE")
-except gspread.WorksheetNotFound:
-    state_sheet = spreadsheet.add_worksheet(title="STATE", rows=30, cols=2)
-
 
 SYMBOL = "BTCUSDT"
 
-ENTRY_SCORE = 60
+BACKTEST_DAYS = 30
 FEE_ROUND_TRIP = 0.20
 
-REENTRY_COOLDOWN_MINUTES = 15
+ENTRY_SCORE = 60
 MIN_HOLD_MINUTES = 5
 MAX_CONSECUTIVE_LOSSES = 5
 
-last_report_time = time.time()
-last_market = None
-last_big_trend = None
-last_exit_time = None
+KST = ZoneInfo("Asia/Seoul")
 
-position_open = False
-entry_price = 0.0
-entry_time = None
-entry_market = None
-entry_big_trend = None
-entry_strategy = None
-max_pnl = 0.0
-
-# 진입 당시 익절/손절/트레일링 값 고정 저장용
-entry_take_profit = 0.0
-entry_stop_loss = 0.0
-entry_trail_start = 0.0
-entry_trail_back = 0.0
-
-strategy_enabled = True
-
-signal_count = 0
-error_count = 0
-market_change_count = 0
-
-total_trades = 0
-win_trades = 0
-loss_trades = 0
-consecutive_losses = 0
-cumulative_pnl = 0.0
+OUTPUT_TRADES = "backtest_trades.csv"
+OUTPUT_EQUITY = "backtest_equity.csv"
+OUTPUT_SUMMARY = "backtest_summary.txt"
 
 
-def send_telegram(message, force=False):
-    now = datetime.now(ZoneInfo("Asia/Seoul"))
-    hour = now.hour
+# =========================
+# TIME HELPERS
+# =========================
 
-    # 새벽 3시 ~ 오전 8시 일반 알림 차단
-    # force=True면 오류 알림은 무조건 전송
-    if not force and 3 <= hour < 8:
-        return
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
-    requests.post(
-        url,
-        data={
-            "chat_id": CHAT_ID,
-            "text": message
-        }
-    )
+def now_kst():
+    return datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
 
 
-HEADERS = [
-    "time", "symbol", "big_trend", "market", "strategy", "signal",
-    "price", "rsi", "score", "ema20", "ema50", "ema100", "ema200",
-    "position_open", "entry_price", "gross_pnl", "net_pnl",
-    "total_trades", "win_rate", "cumulative_pnl",
-    "exit_reason", "strategy_enabled"
-]
+def ms_to_kst(ms):
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).astimezone(KST)
 
 
-def init_sheet_header():
-    sheet.update(range_name="A1:V1", values=[HEADERS])
+def dt_to_ms(dt):
+    return int(dt.timestamp() * 1000)
 
 
-def safe_float(value, default=0.0):
-    try:
-        if value in ["", None]:
-            return default
-        return float(value)
-    except Exception:
-        return default
+# =========================
+# BINANCE DATA
+# =========================
 
+def fetch_klines(symbol, interval, start_dt, end_dt):
+    print(f"Downloading {symbol} {interval} data...")
 
-def safe_int(value, default=0):
-    try:
-        if value in ["", None]:
-            return default
-        return int(float(value))
-    except Exception:
-        return default
+    all_rows = []
+    start_ms = dt_to_ms(start_dt)
+    end_ms = dt_to_ms(end_dt)
 
+    while start_ms < end_ms:
+        candles = client.get_klines(
+            symbol=symbol,
+            interval=interval,
+            startTime=start_ms,
+            endTime=end_ms,
+            limit=1000
+        )
 
-def safe_bool(value, default=False):
-    if value in ["True", "TRUE", "true", True]:
-        return True
-    if value in ["False", "FALSE", "false", False]:
-        return False
-    return default
+        if not candles:
+            break
 
+        all_rows.extend(candles)
 
-def load_state():
-    global position_open, entry_price, entry_time, entry_market
-    global entry_big_trend, entry_strategy, max_pnl, last_exit_time
-    global entry_take_profit, entry_stop_loss, entry_trail_start, entry_trail_back
-    global strategy_enabled, total_trades, win_trades, loss_trades
-    global consecutive_losses, cumulative_pnl
+        last_open_time = candles[-1][0]
+        start_ms = last_open_time + 1
 
-    rows = state_sheet.get_all_records()
+        time.sleep(0.15)
 
-    if not rows:
-        save_state()
-        return
-
-    state = {str(row["key"]): row["value"] for row in rows}
-
-    position_open = safe_bool(state.get("position_open"), False)
-    entry_price = safe_float(state.get("entry_price"), 0.0)
-    entry_time = state.get("entry_time") or None
-    entry_market = state.get("entry_market") or None
-    entry_big_trend = state.get("entry_big_trend") or None
-    entry_strategy = state.get("entry_strategy") or None
-    max_pnl = safe_float(state.get("max_pnl"), 0.0)
-
-    entry_take_profit = safe_float(state.get("entry_take_profit"), 0.0)
-    entry_stop_loss = safe_float(state.get("entry_stop_loss"), 0.0)
-    entry_trail_start = safe_float(state.get("entry_trail_start"), 0.0)
-    entry_trail_back = safe_float(state.get("entry_trail_back"), 0.0)
-
-    last_exit_time = state.get("last_exit_time") or None
-
-    strategy_enabled = safe_bool(state.get("strategy_enabled"), True)
-    total_trades = safe_int(state.get("total_trades"), 0)
-    win_trades = safe_int(state.get("win_trades"), 0)
-    loss_trades = safe_int(state.get("loss_trades"), 0)
-    consecutive_losses = safe_int(state.get("consecutive_losses"), 0)
-    cumulative_pnl = safe_float(state.get("cumulative_pnl"), 0.0)
-
-
-def save_state():
-    state_values = [
-        ["position_open", str(position_open)],
-        ["entry_price", str(entry_price)],
-        ["entry_time", entry_time or ""],
-        ["entry_market", entry_market or ""],
-        ["entry_big_trend", entry_big_trend or ""],
-        ["entry_strategy", entry_strategy or ""],
-        ["max_pnl", str(max_pnl)],
-
-        ["entry_take_profit", str(entry_take_profit)],
-        ["entry_stop_loss", str(entry_stop_loss)],
-        ["entry_trail_start", str(entry_trail_start)],
-        ["entry_trail_back", str(entry_trail_back)],
-
-        ["last_exit_time", last_exit_time or ""],
-        ["strategy_enabled", str(strategy_enabled)],
-        ["total_trades", str(total_trades)],
-        ["win_trades", str(win_trades)],
-        ["loss_trades", str(loss_trades)],
-        ["consecutive_losses", str(consecutive_losses)],
-        ["cumulative_pnl", str(cumulative_pnl)]
-    ]
-
-
-
-def save_log(data):
-    sheet.append_row([
-        data["time"], data["symbol"], data["big_trend"], data["market"],
-        data["strategy"], data["signal"], data["price"], data["rsi"],
-        data["score"], data["ema20"], data["ema50"], data["ema100"],
-        data["ema200"], data["position_open"], data["entry_price"],
-        data["gross_pnl"], data["net_pnl"], data["total_trades"],
-        data["win_rate"], data["cumulative_pnl"], data["exit_reason"],
-        data["strategy_enabled"]
-    ])
-
-
-def get_win_rate():
-    if total_trades == 0:
-        return 0.0
-    return round((win_trades / total_trades) * 100, 2)
-
-
-def get_hold_minutes():
-    if not entry_time:
-        return 0
-
-    entry_ts = time.mktime(time.strptime(entry_time, "%Y-%m-%d %H:%M:%S"))
-    now_ts = time.mktime(time.strptime(now_kst(), "%Y-%m-%d %H:%M:%S"))
-
-    return (now_ts - entry_ts) / 60
-
-
-def in_cooldown():
-    if not last_exit_time:
-        return False
-
-    exit_ts = time.mktime(time.strptime(last_exit_time, "%Y-%m-%d %H:%M:%S"))
-    now_ts = time.mktime(time.strptime(now_kst(), "%Y-%m-%d %H:%M:%S"))
-
-    minutes = (now_ts - exit_ts) / 60
-
-    return minutes < REENTRY_COOLDOWN_MINUTES
-
-
-def get_gross_pnl(price):
-    if not position_open or entry_price == 0:
-        return 0.0
-    return round(((price - entry_price) / entry_price) * 100, 4)
-
-
-def get_net_pnl(price):
-    if not position_open or entry_price == 0:
-        return 0.0
-    return round(get_gross_pnl(price) - FEE_ROUND_TRIP, 4)
-
-
-def get_klines(interval, limit):
-    candles = client.get_klines(symbol=SYMBOL, interval=interval, limit=limit)
-
-    df = pd.DataFrame(candles, columns=[
+    df = pd.DataFrame(all_rows, columns=[
         "time", "open", "high", "low", "close", "volume",
         "close_time", "quote_asset_volume", "trades",
         "taker_buy_base", "taker_buy_quote", "ignore"
     ])
 
+    if df.empty:
+        raise RuntimeError(f"No data downloaded for {interval}")
+
+    df = df.drop_duplicates(subset=["time"]).reset_index(drop=True)
+
     for col in ["open", "high", "low", "close", "volume"]:
         df[col] = df[col].astype(float)
+
+    df["datetime"] = pd.to_datetime(df["time"], unit="ms", utc=True).dt.tz_convert("Asia/Seoul")
 
     return df
 
 
+# =========================
+# INDICATORS
+# =========================
+
 def calculate_indicators(df):
+    df = df.copy()
+
     close = df["close"]
     high = df["high"]
     low = df["low"]
@@ -328,10 +143,11 @@ def calculate_indicators(df):
     return df
 
 
-def detect_big_trend(df_1h, df_4h):
-    h1 = df_1h.iloc[-1]
-    h4 = df_4h.iloc[-1]
+# =========================
+# STRATEGY LOGIC
+# =========================
 
+def detect_big_trend(h1, h4):
     h1_bull = h1["close"] > h1["ema50"] > h1["ema200"]
     h4_bull = h4["close"] > h4["ema50"] > h4["ema200"]
 
@@ -350,8 +166,7 @@ def detect_big_trend(df_1h, df_4h):
     return "BIG_SIDE"
 
 
-def detect_short_market(df_5m):
-    now = df_5m.iloc[-1]
+def detect_short_market(now):
     price = now["close"]
 
     if now["atr_rate"] > 0.014 or now["bb_width"] > 0.065:
@@ -391,10 +206,7 @@ def get_strategy(big_trend, market):
     return "NO_TRADE"
 
 
-def calculate_score(df_5m, big_trend, market, strategy):
-    now = df_5m.iloc[-1]
-    prev = df_5m.iloc[-2]
-
+def calculate_score(now, prev, big_trend, market, strategy):
     price = now["close"]
     rsi = now["rsi"]
     volume_ratio = now["volume_ratio"]
@@ -463,362 +275,308 @@ def calculate_score(df_5m, big_trend, market, strategy):
 
 
 def get_risk_params(strategy):
+    # take_profit is NET PROFIT target after fee.
     if strategy == "SIDE_RSI_BB":
-        return {
-            "take_profit": 0.75,
-            "stop_loss": -0.45,
-            "trail_start": 0.50,
-            "trail_back": 0.25
-        }
+        return {"take_profit": 0.75, "stop_loss": -0.45, "trail_start": 0.50, "trail_back": 0.25}
 
     if strategy == "SIDE_DEEP_REBOUND":
-        return {
-            "take_profit": 0.60,
-            "stop_loss": -0.40,
-            "trail_start": 0.40,
-            "trail_back": 0.22
-        }
+        return {"take_profit": 0.60, "stop_loss": -0.40, "trail_start": 0.40, "trail_back": 0.22}
 
     if strategy == "BULL_PULLBACK":
-        return {
-            "take_profit": 1.30,
-            "stop_loss": -0.70,
-            "trail_start": 0.80,
-            "trail_back": 0.35
-        }
+        return {"take_profit": 1.30, "stop_loss": -0.70, "trail_start": 0.80, "trail_back": 0.35}
 
     if strategy == "BULL_PULLBACK_LIGHT":
-        return {
-            "take_profit": 0.90,
-            "stop_loss": -0.55,
-            "trail_start": 0.60,
-            "trail_back": 0.30
-        }
+        return {"take_profit": 0.90, "stop_loss": -0.55, "trail_start": 0.60, "trail_back": 0.30}
 
     if strategy == "BULL_DEEP_PULLBACK":
-        return {
-            "take_profit": 0.85,
-            "stop_loss": -0.55,
-            "trail_start": 0.55,
-            "trail_back": 0.28
-        }
+        return {"take_profit": 0.85, "stop_loss": -0.55, "trail_start": 0.55, "trail_back": 0.28}
 
     if strategy == "BEAR_SCALP":
-        return {
-            "take_profit": 0.50,
-            "stop_loss": -0.35,
-            "trail_start": 0.35,
-            "trail_back": 0.18
-        }
+        return {"take_profit": 0.50, "stop_loss": -0.35, "trail_start": 0.35, "trail_back": 0.18}
 
+    return {"take_profit": 0, "stop_loss": 0, "trail_start": 0, "trail_back": 0}
+
+
+def get_min_net_for_trailing(strategy):
     return {
-        "take_profit": 0,
-        "stop_loss": 0,
-        "trail_start": 0,
-        "trail_back": 0
-    }
+        "SIDE_RSI_BB": 0.20,
+        "SIDE_DEEP_REBOUND": 0.15,
+        "BULL_PULLBACK": 0.35,
+        "BULL_PULLBACK_LIGHT": 0.25,
+        "BULL_DEEP_PULLBACK": 0.25,
+        "BEAR_SCALP": 0.12
+    }.get(strategy, 0.20)
 
 
-def write_log(df_5m, big_trend, market, strategy, signal, score, exit_reason="-"):
-    now = df_5m.iloc[-1]
-    price = now["close"]
+# =========================
+# BACKTEST ENGINE
+# =========================
 
-    save_log({
-        "time": now_kst(),
-        "symbol": SYMBOL,
-        "big_trend": big_trend,
-        "market": market,
-        "strategy": strategy,
-        "signal": signal,
-        "price": round(price, 2),
-        "rsi": round(now["rsi"], 2),
-        "score": score,
-        "ema20": round(now["ema20"], 2),
-        "ema50": round(now["ema50"], 2),
-        "ema100": round(now["ema100"], 2),
-        "ema200": round(now["ema200"], 2),
-        "position_open": position_open,
-        "entry_price": round(entry_price, 2),
-        "gross_pnl": get_gross_pnl(price),
-        "net_pnl": get_net_pnl(price),
-        "total_trades": total_trades,
-        "win_rate": get_win_rate(),
-        "cumulative_pnl": round(cumulative_pnl, 4),
-        "exit_reason": exit_reason,
-        "strategy_enabled": strategy_enabled
-    })
-
-
-def close_position(df_5m, big_trend, market, score, exit_reason):
-    global position_open, entry_price, entry_time, entry_market
-    global entry_big_trend, entry_strategy, max_pnl
-    global entry_take_profit, entry_stop_loss, entry_trail_start, entry_trail_back
-    global signal_count, total_trades, win_trades, loss_trades
-    global consecutive_losses, cumulative_pnl, strategy_enabled
-    global last_exit_time
-
-    now = df_5m.iloc[-1]
-    price = now["close"]
-    net_pnl = get_net_pnl(price)
-
-    total_trades += 1
-    cumulative_pnl += net_pnl
-
-    if net_pnl > 0:
-        win_trades += 1
-        consecutive_losses = 0
-    else:
-        loss_trades += 1
-        consecutive_losses += 1
-
-    send_telegram(
-        f"🔴 BTC 매도 체결\n\n"
-        f"사유: {exit_reason}\n"
-        f"장기추세: {entry_big_trend}\n"
-        f"단기장세: {entry_market}\n"
-        f"전략: {entry_strategy}\n"
-        f"진입가: {entry_price:.2f}\n"
-        f"청산가: {price:.2f}\n"
-        f"총수익률: {get_gross_pnl(price):.4f}%\n"
-        f"수수료반영: {net_pnl:.4f}%\n"
-        f"누적손익: {cumulative_pnl:.4f}%\n"
-        f"승률: {get_win_rate()}%\n"
-        f"연속손실: {consecutive_losses}"
-    )
-
-    write_log(df_5m, big_trend, market, entry_strategy, "SELL", score, exit_reason)
-
-    signal_count += 1
-    last_exit_time = now_kst()
-
+def run_backtest(df_5m, df_1h, df_4h):
     position_open = False
     entry_price = 0.0
     entry_time = None
-    entry_market = None
-    entry_big_trend = None
     entry_strategy = None
-    max_pnl = 0.0
+    entry_big_trend = None
+    entry_market = None
+    entry_score = 0
 
     entry_take_profit = 0.0
     entry_stop_loss = 0.0
     entry_trail_start = 0.0
     entry_trail_back = 0.0
 
-    save_state()
-
-    if consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
-        strategy_enabled = False
-        save_state()
-        send_telegram(
-            f"🚨 전략 자동 OFF\n\n"
-            f"사유: {consecutive_losses}연속 손실\n"
-            f"조치: 데이터 확인 후 재가동 필요"
-        )
-
-
-def check_exit(df_5m, big_trend, market, score):
-    global max_pnl
-
-    if not position_open:
-        return
-
-    now = df_5m.iloc[-1]
-    price = now["close"]
-    gross_pnl = get_gross_pnl(price)
-    hold_minutes = get_hold_minutes()
-
-    if gross_pnl > max_pnl:
-        max_pnl = gross_pnl
-        save_state()
-
-    params = {
-        "take_profit": entry_take_profit,
-        "stop_loss": entry_stop_loss,
-        "trail_start": entry_trail_start,
-        "trail_back": entry_trail_back
-    }
-
-    if gross_pnl <= params["stop_loss"]:
-        close_position(df_5m, big_trend, market, score, "STOP_LOSS")
-        return
-
-    if hold_minutes < MIN_HOLD_MINUTES:
-        return
-
-    if gross_pnl >= params["take_profit"]:
-        close_position(df_5m, big_trend, market, score, "TAKE_PROFIT")
-        return
-
-    if max_pnl >= params["trail_start"] and gross_pnl <= max_pnl - params["trail_back"]:
-        close_position(df_5m, big_trend, market, score, "TRAILING_STOP")
-        return
-
-    if big_trend == "BIG_CRASH":
-        close_position(df_5m, big_trend, market, score, "BIG_CRASH_EXIT")
-        return
-
-
-def check_entry(df_5m, big_trend, market, strategy, score):
-    global position_open, entry_price, entry_time, entry_market
-    global entry_big_trend, entry_strategy, max_pnl, signal_count
-    global entry_take_profit, entry_stop_loss, entry_trail_start, entry_trail_back
-
-    if not strategy_enabled:
-        return
-
-    if position_open:
-        return
-
-    if in_cooldown():
-        return
-
-    if strategy.startswith("NO_TRADE"):
-        return
-
-    if score < ENTRY_SCORE:
-        return
-
-    now = df_5m.iloc[-1]
-    price = now["close"]
-    rsi = now["rsi"]
-
-    position_open = True
-    entry_price = price
-    entry_time = now_kst()
-    entry_market = market
-    entry_big_trend = big_trend
-    entry_strategy = strategy
     max_pnl = 0.0
 
-    params = get_risk_params(strategy)
+    last_exit_time = None
+    consecutive_losses = 0
+    strategy_enabled = True
 
-    entry_take_profit = params["take_profit"]
-    entry_stop_loss = params["stop_loss"]
-    entry_trail_start = params["trail_start"]
-    entry_trail_back = params["trail_back"]
+    total_pnl = 0.0
+    equity = 100.0
+    peak_equity = 100.0
+    max_drawdown = 0.0
 
-    save_state()
+    trades = []
+    equity_rows = []
 
-    send_telegram(
-        f"🟢 BTC 매수 체결\n\n"
-        f"모드: FILTERED_DATA_COLLECTION\n"
-        f"장기추세: {big_trend}\n"
-        f"단기장세: {market}\n"
-        f"전략: {strategy}\n"
-        f"가격: {price:.2f}\n"
-        f"RSI: {rsi:.2f}\n"
-        f"진입점수: {score}\n"
-        f"익절: {entry_take_profit}%\n"
-        f"손절: {entry_stop_loss}%"
-    )
+    df_1h_times = df_1h["datetime"].tolist()
+    df_4h_times = df_4h["datetime"].tolist()
 
-    write_log(df_5m, big_trend, market, strategy, "BUY", score, "-")
-    signal_count += 1
+    i1 = 0
+    i4 = 0
+
+    for i in range(220, len(df_5m)):
+        now = df_5m.iloc[i]
+        prev = df_5m.iloc[i - 1]
+        current_time = now["datetime"]
+
+        while i1 + 1 < len(df_1h_times) and df_1h_times[i1 + 1] <= current_time:
+            i1 += 1
+
+        while i4 + 1 < len(df_4h_times) and df_4h_times[i4 + 1] <= current_time:
+            i4 += 1
+
+        h1 = df_1h.iloc[i1]
+        h4 = df_4h.iloc[i4]
+
+        if pd.isna(now["rsi"]) or pd.isna(h1["ema200"]) or pd.isna(h4["ema200"]):
+            continue
+
+        big_trend = detect_big_trend(h1, h4)
+        market = detect_short_market(now)
+        strategy = get_strategy(big_trend, market)
+        score = calculate_score(now, prev, big_trend, market, strategy)
+
+        price = now["close"]
+
+        # EXIT
+        if position_open:
+            gross_pnl = ((price - entry_price) / entry_price) * 100
+            net_pnl = gross_pnl - FEE_ROUND_TRIP
+
+            if gross_pnl > max_pnl:
+                max_pnl = gross_pnl
+
+            exit_reason = None
+
+            if gross_pnl <= entry_stop_loss:
+                exit_reason = "STOP_LOSS"
+
+            elif net_pnl >= entry_take_profit:
+                exit_reason = "TAKE_PROFIT"
+
+            elif (
+                net_pnl >= get_min_net_for_trailing(entry_strategy) and
+                max_pnl >= entry_trail_start and
+                gross_pnl <= max_pnl - entry_trail_back
+            ):
+                exit_reason = "TRAILING_STOP"
+
+            elif big_trend == "BIG_CRASH":
+                exit_reason = "BIG_CRASH_EXIT"
+
+            if exit_reason:
+                total_pnl += net_pnl
+                equity *= (1 + net_pnl / 100)
+
+                peak_equity = max(peak_equity, equity)
+                drawdown = ((equity - peak_equity) / peak_equity) * 100
+                max_drawdown = min(max_drawdown, drawdown)
+
+                if net_pnl > 0:
+                    consecutive_losses = 0
+                else:
+                    consecutive_losses += 1
+
+                trades.append({
+                    "entry_time": entry_time,
+                    "exit_time": current_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "strategy": entry_strategy,
+                    "entry_big_trend": entry_big_trend,
+                    "exit_big_trend": big_trend,
+                    "entry_market": entry_market,
+                    "exit_market": market,
+                    "entry_score": entry_score,
+                    "exit_score": score,
+                    "entry_price": round(entry_price, 2),
+                    "exit_price": round(price, 2),
+                    "gross_pnl": round(gross_pnl, 4),
+                    "net_pnl": round(net_pnl, 4),
+                    "max_pnl": round(max_pnl, 4),
+                    "exit_reason": exit_reason,
+                    "equity": round(equity, 4),
+                    "consecutive_losses": consecutive_losses
+                })
+
+                last_exit_time = current_time
+
+                position_open = False
+                entry_price = 0.0
+                entry_time = None
+                entry_strategy = None
+                entry_big_trend = None
+                entry_market = None
+                entry_score = 0
+
+                entry_take_profit = 0.0
+                entry_stop_loss = 0.0
+                entry_trail_start = 0.0
+                entry_trail_back = 0.0
+
+                max_pnl = 0.0
+
+                if consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
+                    strategy_enabled = False
+
+        # ENTRY
+        if not position_open and strategy_enabled:
+            in_cooldown = False
+            if last_exit_time:
+                cooldown_minutes = (current_time - last_exit_time).total_seconds() / 60
+                in_cooldown = cooldown_minutes < 15
+
+            if (
+                not in_cooldown and
+                not strategy.startswith("NO_TRADE") and
+                score >= ENTRY_SCORE
+            ):
+                params = get_risk_params(strategy)
+
+                position_open = True
+                entry_price = price
+                entry_time = current_time.strftime("%Y-%m-%d %H:%M:%S")
+                entry_strategy = strategy
+                entry_big_trend = big_trend
+                entry_market = market
+                entry_score = score
+
+                entry_take_profit = params["take_profit"]
+                entry_stop_loss = params["stop_loss"]
+                entry_trail_start = params["trail_start"]
+                entry_trail_back = params["trail_back"]
+
+                max_pnl = 0.0
+
+        equity_rows.append({
+            "time": current_time.strftime("%Y-%m-%d %H:%M:%S"),
+            "equity": round(equity, 4),
+            "position_open": position_open,
+            "price": round(price, 2),
+            "big_trend": big_trend,
+            "market": market,
+            "strategy": strategy,
+            "score": score
+        })
+
+    trades_df = pd.DataFrame(trades)
+    equity_df = pd.DataFrame(equity_rows)
+
+    return trades_df, equity_df, max_drawdown
 
 
-def detect_anomaly():
-    global signal_count, error_count, market_change_count
+# =========================
+# SUMMARY
+# =========================
 
-    if signal_count >= 15:
-        send_telegram(f"⚠️ 이상감지\n\n최근 신호 과다\n신호 수: {signal_count}")
-        signal_count = 0
+def create_summary(trades_df, equity_df, max_drawdown):
+    if trades_df.empty:
+        return "No trades generated."
 
-    if market_change_count >= 10:
-        send_telegram(f"⚠️ 이상감지\n\n시장상태 변경 과다\n변경 수: {market_change_count}")
-        market_change_count = 0
+    total_trades = len(trades_df)
+    wins = trades_df[trades_df["net_pnl"] > 0]
+    losses = trades_df[trades_df["net_pnl"] <= 0]
 
-    if error_count >= 5:
-        send_telegram(f"🚨 시스템 위험\n\n오류 반복 발생\n오류 수: {error_count}")
-        error_count = 0
+    win_rate = len(wins) / total_trades * 100 if total_trades else 0
+    total_return = equity_df["equity"].iloc[-1] - 100
+    avg_win = wins["net_pnl"].mean() if not wins.empty else 0
+    avg_loss = losses["net_pnl"].mean() if not losses.empty else 0
+    profit_factor = abs(wins["net_pnl"].sum() / losses["net_pnl"].sum()) if not losses.empty and losses["net_pnl"].sum() != 0 else 999
 
+    by_strategy = trades_df.groupby("strategy")["net_pnl"].agg(["count", "sum", "mean"]).sort_values("sum", ascending=False)
+    by_reason = trades_df.groupby("exit_reason")["net_pnl"].agg(["count", "sum", "mean"]).sort_values("sum", ascending=False)
+    by_big_trend = trades_df.groupby("entry_big_trend")["net_pnl"].agg(["count", "sum", "mean"]).sort_values("sum", ascending=False)
 
-def send_hourly_report(df_5m, big_trend, market, strategy, score):
-    now = df_5m.iloc[-1]
-    price = now["close"]
+    summary = []
+    summary.append("========== BACKTEST SUMMARY ==========")
+    summary.append(f"Symbol: {SYMBOL}")
+    summary.append(f"Days: {BACKTEST_DAYS}")
+    summary.append(f"Fee round trip: {FEE_ROUND_TRIP}%")
+    summary.append("")
+    summary.append(f"Total trades: {total_trades}")
+    summary.append(f"Win rate: {win_rate:.2f}%")
+    summary.append(f"Total return: {total_return:.2f}%")
+    summary.append(f"Max drawdown: {max_drawdown:.2f}%")
+    summary.append(f"Avg win: {avg_win:.4f}%")
+    summary.append(f"Avg loss: {avg_loss:.4f}%")
+    summary.append(f"Profit factor: {profit_factor:.4f}")
+    summary.append("")
+    summary.append("----- By Strategy -----")
+    summary.append(by_strategy.to_string())
+    summary.append("")
+    summary.append("----- By Exit Reason -----")
+    summary.append(by_reason.to_string())
+    summary.append("")
+    summary.append("----- By Big Trend -----")
+    summary.append(by_big_trend.to_string())
 
-    send_telegram(
-        f"📈 1시간 시스템 리포트\n\n"
-        f"모드: FILTERED_DATA_COLLECTION\n"
-        f"장기추세: {big_trend}\n"
-        f"단기장세: {market}\n"
-        f"전략: {strategy}\n"
-        f"가격: {price:.2f}\n"
-        f"RSI: {now['rsi']:.2f}\n"
-        f"점수: {score}\n\n"
-        f"전략활성화: {strategy_enabled}\n"
-        f"포지션: {position_open}\n"
-        f"진입가: {entry_price:.2f}\n"
-        f"현재수익률: {get_net_pnl(price):.4f}%\n"
-        f"진입익절: {entry_take_profit}%\n"
-        f"진입손절: {entry_stop_loss}%\n\n"
-        f"총 거래: {total_trades}\n"
-        f"승률: {get_win_rate()}%\n"
-        f"누적손익: {cumulative_pnl:.4f}%\n"
-        f"연속손실: {consecutive_losses}"
-    )
-
-
-def run_bot():
-    global last_market, last_big_trend, market_change_count
-
-    df_5m = calculate_indicators(get_klines(Client.KLINE_INTERVAL_5MINUTE, 220))
-    df_1h = calculate_indicators(get_klines(Client.KLINE_INTERVAL_1HOUR, 220))
-    df_4h = calculate_indicators(get_klines(Client.KLINE_INTERVAL_4HOUR, 220))
-
-    big_trend = detect_big_trend(df_1h, df_4h)
-    market = detect_short_market(df_5m)
-    strategy = get_strategy(big_trend, market)
-    score = calculate_score(df_5m, big_trend, market, strategy)
-
-    if (big_trend != last_big_trend or market != last_market) and score >= 50:
-        # 시장상태 변경 알림은 피로도가 높아서 현재 비활성화
-        # 필요하면 아래 send_telegram 주석 해제
-        # send_telegram(
-        #     f"📊 시장상태 변경\n\n"
-        #     f"장기추세: {big_trend}\n"
-        #     f"단기장세: {market}\n"
-        #     f"전략: {strategy}\n"
-        #     f"점수: {score}"
-        # )
-        last_big_trend = big_trend
-        last_market = market
-        market_change_count += 1
-
-    check_exit(df_5m, big_trend, market, score)
-    check_entry(df_5m, big_trend, market, strategy, score)
-    write_log(df_5m, big_trend, market, strategy, "WATCH", score, "-")
-
-    print(f"{big_trend} | {market} | {strategy} | SCORE={score} | POSITION={position_open}")
-
-    return df_5m, big_trend, market, strategy, score
+    return "\n".join(summary)
 
 
-init_sheet_header()
-load_state()
+# =========================
+# MAIN
+# =========================
 
-send_telegram(
-    f"🚀 FILTERED_DATA_COLLECTION 모드 BTC 전략봇 시작\n\n"
-    f"복구 포지션: {position_open}\n"
-    f"진입가: {entry_price}\n"
-    f"전략: {entry_strategy}\n"
-    f"진입익절: {entry_take_profit}%\n"
-    f"진입손절: {entry_stop_loss}%\n"
-    f"누적손익: {cumulative_pnl:.4f}%"
-)
+def main():
+    end_dt = datetime.now(timezone.utc)
+    start_dt = end_dt - timedelta(days=BACKTEST_DAYS + 45)
 
-while True:
-    try:
-        df_5m, big_trend, market, strategy, score = run_bot()
+    print("Backtest started:", now_kst())
 
-        detect_anomaly()
+    df_5m = calculate_indicators(fetch_klines(SYMBOL, Client.KLINE_INTERVAL_5MINUTE, start_dt, end_dt))
+    df_1h = calculate_indicators(fetch_klines(SYMBOL, Client.KLINE_INTERVAL_1HOUR, start_dt, end_dt))
+    df_4h = calculate_indicators(fetch_klines(SYMBOL, Client.KLINE_INTERVAL_4HOUR, start_dt, end_dt))
 
-        if time.time() - last_report_time >= 3600:
-            send_hourly_report(df_5m, big_trend, market, strategy, score)
-            last_report_time = time.time()
+    cutoff = datetime.now(KST) - timedelta(days=BACKTEST_DAYS)
+    df_5m = df_5m[df_5m["datetime"] >= cutoff].reset_index(drop=True)
 
-        time.sleep(60)
+    trades_df, equity_df, max_drawdown = run_backtest(df_5m, df_1h, df_4h)
 
-    except Exception as e:
-        error_count += 1
-        send_telegram(f"❌ 오류 발생\n{str(e)}", force=True)
-        time.sleep(60)
+    trades_df.to_csv(OUTPUT_TRADES, index=False, encoding="utf-8-sig")
+    equity_df.to_csv(OUTPUT_EQUITY, index=False, encoding="utf-8-sig")
+
+    summary = create_summary(trades_df, equity_df, max_drawdown)
+
+    with open(OUTPUT_SUMMARY, "w", encoding="utf-8") as f:
+        f.write(summary)
+
+    print(summary)
+    print("")
+    print(f"Saved: {OUTPUT_TRADES}")
+    print(f"Saved: {OUTPUT_EQUITY}")
+    print(f"Saved: {OUTPUT_SUMMARY}")
+    print("Backtest finished:", now_kst())
+
+
+if __name__ == "__main__":
+    main()
