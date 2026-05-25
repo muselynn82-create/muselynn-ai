@@ -219,10 +219,6 @@ def save_state():
         ["cumulative_pnl", str(cumulative_pnl)]
     ]
 
-state_sheet.update(
-    range_name="A1:B19",
-    values=[["key", "value"]] + state_values
-)
 
 
 def save_log(data):
