@@ -223,6 +223,8 @@ def save_state():
 
 
 def save_log(data):
+    print("SHEET WRITE START")
+
     sheet.append_row([
         data["time"], data["symbol"], data["big_trend"], data["market"],
         data["strategy"], data["signal"], data["price"], data["rsi"],
@@ -232,6 +234,8 @@ def save_log(data):
         data["win_rate"], data["cumulative_pnl"], data["exit_reason"],
         data["strategy_enabled"]
     ])
+
+    print("SHEET WRITE SUCCESS")
 
 
 def get_win_rate():
