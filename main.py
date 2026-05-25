@@ -529,7 +529,7 @@ def close_position(df_5m, big_trend, market, score, exit_reason):
         consecutive_losses += 1
 
     send_telegram(
-        f"🔴 BTC 청산 신호\n\n"
+        f"🔴 BTC 매도 체결\n\n"
         f"사유: {exit_reason}\n"
         f"장기추세: {entry_big_trend}\n"
         f"단기장세: {entry_market}\n"
@@ -643,7 +643,7 @@ def check_entry(df_5m, big_trend, market, strategy, score):
     save_state()
 
     send_telegram(
-        f"🟢 BTC 진입 관심 신호\n\n"
+        f"🟢 BTC 매수 체결\n\n"
         f"모드: FILTERED_DATA_COLLECTION\n"
         f"장기추세: {big_trend}\n"
         f"단기장세: {market}\n"
