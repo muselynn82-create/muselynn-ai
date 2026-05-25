@@ -128,7 +128,7 @@ HEADERS = [
 
 
 def init_sheet_header():
-    sheet.update("A1:V1", [HEADERS])
+    sheet.update(range_name="A1:V1", values=[HEADERS])
 
 
 def safe_float(value, default=0.0):
@@ -219,7 +219,10 @@ def save_state():
         ["cumulative_pnl", str(cumulative_pnl)]
     ]
 
-    state_sheet.update("A1:B19", [["key", "value"]] + state_values)
+state_sheet.update(
+    range_name="A1:B19",
+    values=[["key", "value"]] + state_values
+)
 
 
 def save_log(data):
