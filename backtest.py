@@ -148,19 +148,16 @@ def calculate_indicators(df):
 # =========================
 
 def detect_big_trend(h1, h4):
-    h1_bull = h1["close"] > h1["ema50"] > h1["ema200"]
-    h4_bull = h4["close"] > h4["ema50"] > h4["ema200"]
-
-    h1_bear = h1["close"] < h1["ema50"] < h1["ema200"]
-    h4_bear = h4["close"] < h4["ema50"] < h4["ema200"]
 
     if h1["atr_rate"] > 0.03 or h4["atr_rate"] > 0.055:
         return "BIG_CRASH"
 
-    if h1_bull and h4_bull:
+    # 완화된 상승추세 조건
+    if h4["close"] > h4["ema200"]:
         return "BIG_BULL"
 
-    if h1_bear and h4_bear:
+    # 완화된 하락추세 조건
+    if h4["close"] < h4["ema200"]:
         return "BIG_BEAR"
 
     return "BIG_SIDE"
@@ -454,7 +451,7 @@ def run_backtest(df_5m, df_1h, df_4h):
             in_cooldown = False
             if last_exit_time:
                 cooldown_minutes = (current_time - last_exit_time).total_seconds() / 60
-                in_cooldown = cooldown_minutes < 15
+                in_cooldown = cooldown_minutes < 3
 
             if (
                 not in_cooldown and
