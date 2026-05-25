@@ -468,8 +468,8 @@ def get_risk_params(strategy):
         return {
             "take_profit": 0.75,
             "stop_loss": -0.45,
-            "trail_start": 0.50,
-            "trail_back": 0.25
+            "trail_start": 0.80,
+            "trail_back": 0.40
         }
 
     if strategy == "SIDE_DEEP_REBOUND":
