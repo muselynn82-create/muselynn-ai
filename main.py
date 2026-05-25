@@ -625,6 +625,8 @@ def check_exit(df_5m, big_trend, market, score):
 
     now = df_5m.iloc[-1]
     price = now["close"]
+
+    gross_pnl = get_gross_pnl(price)
     net_pnl = get_net_pnl(price)
     hold_minutes = get_hold_minutes()
 
@@ -650,26 +652,26 @@ def check_exit(df_5m, big_trend, market, score):
         close_position(df_5m, big_trend, market, score, "TAKE_PROFIT")
         return
 
-min_net_for_trailing = {
-    "SIDE_RSI_BB": 0.20,
-    "SIDE_DEEP_REBOUND": 0.15,
-    "BULL_PULLBACK": 0.35,
-    "BULL_PULLBACK_LIGHT": 0.25,
-    "BULL_DEEP_PULLBACK": 0.25,
-    "BEAR_SCALP": 0.12
-}.get(entry_strategy, 0.20)
+    min_net_for_trailing = {
+        "SIDE_RSI_BB": 0.20,
+        "SIDE_DEEP_REBOUND": 0.15,
+        "BULL_PULLBACK": 0.35,
+        "BULL_PULLBACK_LIGHT": 0.25,
+        "BULL_DEEP_PULLBACK": 0.25,
+        "BEAR_SCALP": 0.12
+    }.get(entry_strategy, 0.20)
 
-        if (
-            net_pnl >= min_net_for_trailing and
-            max_pnl >= params["trail_start"] and
-            gross_pnl <= max_pnl - params["trail_back"]
-        ):
-            close_position(df_5m, big_trend, market, score, "TRAILING_STOP")
-            return
+    if (
+        net_pnl >= min_net_for_trailing and
+        max_pnl >= params["trail_start"] and
+        gross_pnl <= max_pnl - params["trail_back"]
+    ):
+        close_position(df_5m, big_trend, market, score, "TRAILING_STOP")
+        return
 
-        if big_trend == "BIG_CRASH":
-            close_position(df_5m, big_trend, market, score, "BIG_CRASH_EXIT")
-            return
+    if big_trend == "BIG_CRASH":
+        close_position(df_5m, big_trend, market, score, "BIG_CRASH_EXIT")
+        return
 
 
 def check_entry(df_5m, big_trend, market, strategy, score):
