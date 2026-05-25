@@ -171,19 +171,16 @@ def calculate_score(now, strategy):
 
     if strategy == "BULL_DEEP_PULLBACK":
 
-        if rsi < 30:
+        if rsi < 27:
             score += 40
 
-    if (
-        price <= now["bb_lower"]
-        and now["close"] > now["open"]
-    ):
-        score += 30
+        if price <= now["bb_lower"] or (price <= now["bb_mid"] and now["close"] > now["open"]):
+            score += 30
 
         if price > now["ema100"]:
             score += 20
 
-        if volume_ratio >= 1.0:
+        if volume_ratio >= 1.2:
             score += 15
 
         if price >= now["ema20"] * 0.995:
