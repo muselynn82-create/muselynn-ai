@@ -625,7 +625,7 @@ def check_exit(df_5m, big_trend, market, score):
 
     now = df_5m.iloc[-1]
     price = now["close"]
-    gross_pnl = get_gross_pnl(price)
+    net_pnl = get_net_pnl(price)
     hold_minutes = get_hold_minutes()
 
     if gross_pnl > max_pnl:
@@ -646,7 +646,7 @@ def check_exit(df_5m, big_trend, market, score):
     if hold_minutes < MIN_HOLD_MINUTES:
         return
 
-    if gross_pnl >= params["take_profit"]:
+    if net_pnl >= params["take_profit"]:
         close_position(df_5m, big_trend, market, score, "TAKE_PROFIT")
         return
 
