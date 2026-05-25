@@ -174,8 +174,11 @@ def calculate_score(now, strategy):
         if rsi < 27:
             score += 40
 
-        if price <= now["bb_lower"]:
-            score += 30
+    if (
+        price <= now["bb_lower"]
+        and now["close"] > now["open"]
+    ):
+        score += 30
 
         if price > now["ema100"]:
             score += 20
@@ -193,7 +196,7 @@ def get_risk_params(strategy):
     if strategy == "BULL_DEEP_PULLBACK":
         return {
             "take_profit": 1.10,
-            "stop_loss": -0.30,
+            "stop_loss": -0.50,
             "trail_start": 0.70,
             "trail_back": 0.32
         }
@@ -249,10 +252,10 @@ def run_backtest(df_15m, df_1h, df_4h):
         now = df_15m.iloc[i]
         current_time = now["datetime"]
 
-        while i1 + 1 < len(df_1h_times) and df_1h_times[i1 + 1] <= current_time:
+        while i1 + 1 < len(df_1h_times) and df_1h_times[i1 + 1] <= current_time - timedelta(hours=1):
             i1 += 1
 
-        while i4 + 1 < len(df_4h_times) and df_4h_times[i4 + 1] <= current_time:
+        while i4 + 1 < len(df_4h_times) and df_4h_times[i4 + 1] <= current_time - timedelta(hours=4):
             i4 += 1
 
         h1 = df_1h.iloc[i1]
