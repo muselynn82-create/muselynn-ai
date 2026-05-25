@@ -128,7 +128,7 @@ HEADERS = [
 
 
 def init_sheet_header():
-    sheet.update("A1:V1", [HEADERS])
+    sheet.update(range_name="A1:V1", values=[HEADERS])
 
 
 def safe_float(value, default=0.0):
