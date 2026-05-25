@@ -23,7 +23,6 @@ FEE_ROUND_TRIP = 0.20
 
 ENTRY_SCORE = 60
 MIN_HOLD_MINUTES = 5
-MAX_CONSECUTIVE_LOSSES = 5
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -38,10 +37,6 @@ OUTPUT_SUMMARY = "backtest_summary.txt"
 
 def now_kst():
     return datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
-
-
-def ms_to_kst(ms):
-    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).astimezone(KST)
 
 
 def dt_to_ms(dt):
@@ -148,162 +143,55 @@ def calculate_indicators(df):
 # =========================
 
 def detect_big_trend(h1, h4):
-
     if h1["atr_rate"] > 0.03 or h4["atr_rate"] > 0.055:
         return "BIG_CRASH"
 
-    # 상승추세: 4시간 장기 상승 + 1시간 단기 지지
     if h4["close"] > h4["ema200"] and h1["close"] > h1["ema50"]:
         return "BIG_BULL"
 
-    # 하락추세: 4시간 장기 하락 + 1시간 단기 약세
     if h4["close"] < h4["ema200"] and h1["close"] < h1["ema50"]:
         return "BIG_BEAR"
 
     return "BIG_SIDE"
 
 
-def detect_short_market(now):
-    price = now["close"]
-
-    if now["atr_rate"] > 0.014 or now["bb_width"] > 0.065:
-        return "VOLATILE"
-
-    if price > now["ema20"] > now["ema50"] > now["ema100"]:
-        return "BULL"
-
-    if price < now["ema20"] < now["ema50"] < now["ema100"]:
-        return "BEAR"
-
-    return "SIDE"
-
-
-def get_strategy(big_trend, market):
+def get_strategy(big_trend):
     if big_trend == "BIG_BULL":
         return "BULL_DEEP_PULLBACK"
 
     return "NO_TRADE"
 
 
-def calculate_score(now, prev, big_trend, market, strategy):
+def calculate_score(now, strategy):
     price = now["close"]
     rsi = now["rsi"]
     volume_ratio = now["volume_ratio"]
 
     score = 0
 
-    if strategy == "SIDE_RSI_BB":
-        if rsi < 35:
-            score += 25
-        if price <= now["bb_lower"] * 1.002:
-            score += 25
-        if price <= now["bb_lower"] * 1.003:
-            score += 20
-        if market == "SIDE":
-            score += 15
-        if volume_ratio >= 0.9:
-            score += 15
-
-    elif strategy == "SIDE_DEEP_REBOUND":
-        if rsi < 28:
-            score += 35
-        if price <= now["bb_lower"] * 1.003:
-            score += 30
-        if volume_ratio >= 0.9:
-            score += 15
-
-    elif strategy == "BULL_PULLBACK":
-        if 35 <= rsi <= 55:
-            score += 35
-        if price > now["ema50"]:
-            score += 25
-        if price <= now["ema20"] * 1.004:
-            score += 25
-        if big_trend == "BIG_BULL":
-            score += 15
-        if volume_ratio >= 1.0:
-            score += 15
-
-    elif strategy == "BULL_PULLBACK_LIGHT":
-        if 38 <= rsi <= 55:
-            score += 30
-        if price > now["ema50"]:
-            score += 25
-        if price <= now["ema20"] * 1.004:
-            score += 20
-        if volume_ratio >= 0.9:
-            score += 10
-
-    elif strategy == "BULL_DEEP_PULLBACK":
-        if rsi < 28:
+    if strategy == "BULL_DEEP_PULLBACK":
+        if rsi < 25:
             score += 40
-        if price <= now["bb_lower"] * 1.002:
+
+        if price <= now["bb_lower"]:
             score += 30
+
         if price > now["ema100"]:
             score += 20
-        if volume_ratio >= 1.0:
-            score += 15
 
-    elif strategy == "BEAR_SCALP":
-        if rsi < 30:
-            score += 35
-        if price <= now["bb_lower"] * 1.006:
-            score += 30
-        if volume_ratio >= 0.9:
-            score += 20
-        if price > now["bb_lower"]:
+        if volume_ratio >= 1.2:
             score += 15
 
     return score
 
 
 def get_risk_params(strategy):
-    if strategy == "SIDE_RSI_BB":
-        return {
-            "take_profit": 0.90,
-            "stop_loss": -0.25,
-            "trail_start": 0.55,
-            "trail_back": 0.28
-        }
-
-    if strategy == "SIDE_DEEP_REBOUND":
-        return {
-            "take_profit": 0.80,
-            "stop_loss": -0.25,
-            "trail_start": 0.50,
-            "trail_back": 0.25
-        }
-
-    if strategy == "BULL_PULLBACK":
-        return {
-            "take_profit": 1.50,
-            "stop_loss": -0.35,
-            "trail_start": 0.90,
-            "trail_back": 0.40
-        }
-
-    if strategy == "BULL_PULLBACK_LIGHT":
-        return {
-            "take_profit": 1.10,
-            "stop_loss": -0.30,
-            "trail_start": 0.70,
-            "trail_back": 0.32
-        }
-
     if strategy == "BULL_DEEP_PULLBACK":
         return {
             "take_profit": 1.10,
             "stop_loss": -0.30,
             "trail_start": 0.70,
             "trail_back": 0.32
-        }
-
-    if strategy == "BEAR_SCALP":
-        return {
-            "take_profit": 0.70,
-            "stop_loss": -0.22,
-            "trail_start": 0.45,
-            "trail_back": 0.22
         }
 
     return {
@@ -316,12 +204,7 @@ def get_risk_params(strategy):
 
 def get_min_net_for_trailing(strategy):
     return {
-        "SIDE_RSI_BB": 0.20,
-        "SIDE_DEEP_REBOUND": 0.15,
-        "BULL_PULLBACK": 0.35,
-        "BULL_PULLBACK_LIGHT": 0.25,
-        "BULL_DEEP_PULLBACK": 0.25,
-        "BEAR_SCALP": 0.12
+        "BULL_DEEP_PULLBACK": 0.25
     }.get(strategy, 0.20)
 
 
@@ -335,7 +218,6 @@ def run_backtest(df_15m, df_1h, df_4h):
     entry_time = None
     entry_strategy = None
     entry_big_trend = None
-    entry_market = None
     entry_score = 0
 
     entry_take_profit = 0.0
@@ -344,12 +226,8 @@ def run_backtest(df_15m, df_1h, df_4h):
     entry_trail_back = 0.0
 
     max_pnl = 0.0
-
     last_exit_time = None
-    consecutive_losses = 0
-    strategy_enabled = True
 
-    total_pnl = 0.0
     equity = 100.0
     peak_equity = 100.0
     max_drawdown = 0.0
@@ -365,7 +243,6 @@ def run_backtest(df_15m, df_1h, df_4h):
 
     for i in range(220, len(df_15m)):
         now = df_15m.iloc[i]
-        prev = df_15m.iloc[i - 1]
         current_time = now["datetime"]
 
         while i1 + 1 < len(df_1h_times) and df_1h_times[i1 + 1] <= current_time:
@@ -381,10 +258,8 @@ def run_backtest(df_15m, df_1h, df_4h):
             continue
 
         big_trend = detect_big_trend(h1, h4)
-        market = detect_short_market(now)
-        strategy = get_strategy(big_trend, market)
-        score = calculate_score(now, prev, big_trend, market, strategy)
-
+        strategy = get_strategy(big_trend)
+        score = calculate_score(now, strategy)
         price = now["close"]
 
         # EXIT
@@ -404,9 +279,9 @@ def run_backtest(df_15m, df_1h, df_4h):
                 exit_reason = "TAKE_PROFIT"
 
             elif (
-                net_pnl >= get_min_net_for_trailing(entry_strategy) and
-                max_pnl >= entry_trail_start and
-                gross_pnl <= max_pnl - entry_trail_back
+                net_pnl >= get_min_net_for_trailing(entry_strategy)
+                and max_pnl >= entry_trail_start
+                and gross_pnl <= max_pnl - entry_trail_back
             ):
                 exit_reason = "TRAILING_STOP"
 
@@ -414,17 +289,11 @@ def run_backtest(df_15m, df_1h, df_4h):
                 exit_reason = "BIG_CRASH_EXIT"
 
             if exit_reason:
-                total_pnl += net_pnl
                 equity *= (1 + net_pnl / 100)
 
                 peak_equity = max(peak_equity, equity)
                 drawdown = ((equity - peak_equity) / peak_equity) * 100
                 max_drawdown = min(max_drawdown, drawdown)
-
-                if net_pnl > 0:
-                    consecutive_losses = 0
-                else:
-                    consecutive_losses += 1
 
                 trades.append({
                     "entry_time": entry_time,
@@ -432,8 +301,6 @@ def run_backtest(df_15m, df_1h, df_4h):
                     "strategy": entry_strategy,
                     "entry_big_trend": entry_big_trend,
                     "exit_big_trend": big_trend,
-                    "entry_market": entry_market,
-                    "exit_market": market,
                     "entry_score": entry_score,
                     "exit_score": score,
                     "entry_price": round(entry_price, 2),
@@ -442,8 +309,7 @@ def run_backtest(df_15m, df_1h, df_4h):
                     "net_pnl": round(net_pnl, 4),
                     "max_pnl": round(max_pnl, 4),
                     "exit_reason": exit_reason,
-                    "equity": round(equity, 4),
-                    "consecutive_losses": consecutive_losses
+                    "equity": round(equity, 4)
                 })
 
                 last_exit_time = current_time
@@ -453,7 +319,6 @@ def run_backtest(df_15m, df_1h, df_4h):
                 entry_time = None
                 entry_strategy = None
                 entry_big_trend = None
-                entry_market = None
                 entry_score = 0
 
                 entry_take_profit = 0.0
@@ -463,20 +328,17 @@ def run_backtest(df_15m, df_1h, df_4h):
 
                 max_pnl = 0.0
 
-                # if consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
-                #     strategy_enabled = False
-
         # ENTRY
-        if not position_open and strategy_enabled:
+        if not position_open:
             in_cooldown = False
             if last_exit_time:
                 cooldown_minutes = (current_time - last_exit_time).total_seconds() / 60
                 in_cooldown = cooldown_minutes < 3
 
             if (
-                not in_cooldown and
-                not strategy.startswith("NO_TRADE") and
-                score >= ENTRY_SCORE
+                not in_cooldown
+                and not strategy.startswith("NO_TRADE")
+                and score >= ENTRY_SCORE
             ):
                 params = get_risk_params(strategy)
 
@@ -485,7 +347,6 @@ def run_backtest(df_15m, df_1h, df_4h):
                 entry_time = current_time.strftime("%Y-%m-%d %H:%M:%S")
                 entry_strategy = strategy
                 entry_big_trend = big_trend
-                entry_market = market
                 entry_score = score
 
                 entry_take_profit = params["take_profit"]
@@ -501,7 +362,6 @@ def run_backtest(df_15m, df_1h, df_4h):
             "position_open": position_open,
             "price": round(price, 2),
             "big_trend": big_trend,
-            "market": market,
             "strategy": strategy,
             "score": score
         })
