@@ -211,7 +211,7 @@ def calculate_score(now, prev, big_trend, market, strategy):
     score = 0
 
     if strategy == "SIDE_RSI_BB":
-        if rsi < 38:
+        if rsi < 45:
             score += 25
         if price <= now["bb_lower"] * 1.004:
             score += 25
@@ -265,8 +265,8 @@ def calculate_score(now, prev, big_trend, market, strategy):
             score += 30
         if volume_ratio >= 0.9:
             score += 20
-        if prev["close"] < prev["bb_lower"] and price > now["bb_lower"]:
-            score += 20
+        if price > now["bb_lower"]:
+            score += 15
 
     return score
 
