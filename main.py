@@ -710,13 +710,13 @@ def run_bot():
     score = calculate_score(df_5m, big_trend, market, strategy)
 
     if (big_trend != last_big_trend or market != last_market) and score >= 50:
-        send_telegram(
-            f"📊 시장상태 변경\n\n"
-            f"장기추세: {big_trend}\n"
-            f"단기장세: {market}\n"
-            f"전략: {strategy}\n"
-            f"점수: {score}"
-        )
+        # send_telegram(
+        #     f"📊 시장상태 변경\n\n"
+        #     f"장기추세: {big_trend}\n"
+        #     f"단기장세: {market}\n"
+        #     f"전략: {strategy}\n"
+        #     f"점수: {score}"
+        # )
         last_big_trend = big_trend
         last_market = market
         market_change_count += 1
