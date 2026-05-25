@@ -173,7 +173,7 @@ def calculate_score(now, strategy):
 
         # 핵심 조건: 깊은 과매도 + BB 하단 반등
         if (
-            rsi < 27
+            rsi < 29
             and price <= now["bb_lower"]
             and now["close"] > now["open"]
         ):
