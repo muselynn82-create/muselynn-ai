@@ -53,13 +53,9 @@ sheet = spreadsheet.worksheet("BTC_TRADING_LOG")
 
 try:
     state_sheet = spreadsheet.worksheet("STATE")
-except:
-    state_sheet = spreadsheet.add_worksheet(title="STATE", rows=30, cols=2)
-
-try:
-    state_sheet = spreadsheet.worksheet("STATE")
 except gspread.WorksheetNotFound:
     state_sheet = spreadsheet.add_worksheet(title="STATE", rows=30, cols=2)
+
 
 SYMBOL = "BTCUSDT"
 
@@ -82,6 +78,12 @@ entry_market = None
 entry_big_trend = None
 entry_strategy = None
 max_pnl = 0.0
+
+# 진입 당시 익절/손절/트레일링 값 고정 저장용
+entry_take_profit = 0.0
+entry_stop_loss = 0.0
+entry_trail_start = 0.0
+entry_trail_back = 0.0
 
 strategy_enabled = True
 
@@ -115,6 +117,7 @@ def send_telegram(message, force=False):
         }
     )
 
+
 HEADERS = [
     "time", "symbol", "big_trend", "market", "strategy", "signal",
     "price", "rsi", "score", "ema20", "ema50", "ema100", "ema200",
@@ -123,17 +126,9 @@ HEADERS = [
     "exit_reason", "strategy_enabled"
 ]
 
+
 def init_sheet_header():
     sheet.update("A1:V1", [HEADERS])
-
-spreadsheet = gc.open(GOOGLE_SHEET_NAME)
-
-sheet = spreadsheet.worksheet("BTC_TRADING_LOG")
-
-try:
-    state_sheet = spreadsheet.worksheet("STATE")
-except gspread.WorksheetNotFound:
-    state_sheet = spreadsheet.add_worksheet(title="STATE", rows=30, cols=2)
 
 
 def safe_float(value, default=0.0):
@@ -165,6 +160,7 @@ def safe_bool(value, default=False):
 def load_state():
     global position_open, entry_price, entry_time, entry_market
     global entry_big_trend, entry_strategy, max_pnl, last_exit_time
+    global entry_take_profit, entry_stop_loss, entry_trail_start, entry_trail_back
     global strategy_enabled, total_trades, win_trades, loss_trades
     global consecutive_losses, cumulative_pnl
 
@@ -183,6 +179,12 @@ def load_state():
     entry_big_trend = state.get("entry_big_trend") or None
     entry_strategy = state.get("entry_strategy") or None
     max_pnl = safe_float(state.get("max_pnl"), 0.0)
+
+    entry_take_profit = safe_float(state.get("entry_take_profit"), 0.0)
+    entry_stop_loss = safe_float(state.get("entry_stop_loss"), 0.0)
+    entry_trail_start = safe_float(state.get("entry_trail_start"), 0.0)
+    entry_trail_back = safe_float(state.get("entry_trail_back"), 0.0)
+
     last_exit_time = state.get("last_exit_time") or None
 
     strategy_enabled = safe_bool(state.get("strategy_enabled"), True)
@@ -202,6 +204,12 @@ def save_state():
         ["entry_big_trend", entry_big_trend or ""],
         ["entry_strategy", entry_strategy or ""],
         ["max_pnl", str(max_pnl)],
+
+        ["entry_take_profit", str(entry_take_profit)],
+        ["entry_stop_loss", str(entry_stop_loss)],
+        ["entry_trail_start", str(entry_trail_start)],
+        ["entry_trail_back", str(entry_trail_back)],
+
         ["last_exit_time", last_exit_time or ""],
         ["strategy_enabled", str(strategy_enabled)],
         ["total_trades", str(total_trades)],
@@ -211,7 +219,7 @@ def save_state():
         ["cumulative_pnl", str(cumulative_pnl)]
     ]
 
-    state_sheet.update("A1:B15", [["key", "value"]] + state_values)
+    state_sheet.update("A1:B19", [["key", "value"]] + state_values)
 
 
 def save_log(data):
@@ -457,24 +465,59 @@ def calculate_score(df_5m, big_trend, market, strategy):
 
 def get_risk_params(strategy):
     if strategy == "SIDE_RSI_BB":
-        return {"take_profit": 0.75, "stop_loss": -0.45, "trail_start": 0.50, "trail_back": 0.25}
+        return {
+            "take_profit": 0.75,
+            "stop_loss": -0.45,
+            "trail_start": 0.50,
+            "trail_back": 0.25
+        }
 
     if strategy == "SIDE_DEEP_REBOUND":
-        return {"take_profit": 0.60, "stop_loss": -0.40, "trail_start": 0.40, "trail_back": 0.22}
+        return {
+            "take_profit": 0.60,
+            "stop_loss": -0.40,
+            "trail_start": 0.40,
+            "trail_back": 0.22
+        }
 
     if strategy == "BULL_PULLBACK":
-        return {"take_profit": 1.30, "stop_loss": -0.70, "trail_start": 0.80, "trail_back": 0.35}
+        return {
+            "take_profit": 1.30,
+            "stop_loss": -0.70,
+            "trail_start": 0.80,
+            "trail_back": 0.35
+        }
 
     if strategy == "BULL_PULLBACK_LIGHT":
-        return {"take_profit": 0.90, "stop_loss": -0.55, "trail_start": 0.60, "trail_back": 0.30}
+        return {
+            "take_profit": 0.90,
+            "stop_loss": -0.55,
+            "trail_start": 0.60,
+            "trail_back": 0.30
+        }
 
     if strategy == "BULL_DEEP_PULLBACK":
-        return {"take_profit": 0.85, "stop_loss": -0.55, "trail_start": 0.55, "trail_back": 0.28}
+        return {
+            "take_profit": 0.85,
+            "stop_loss": -0.55,
+            "trail_start": 0.55,
+            "trail_back": 0.28
+        }
 
     if strategy == "BEAR_SCALP":
-        return {"take_profit": 0.50, "stop_loss": -0.35, "trail_start": 0.35, "trail_back": 0.18}
+        return {
+            "take_profit": 0.50,
+            "stop_loss": -0.35,
+            "trail_start": 0.35,
+            "trail_back": 0.18
+        }
 
-    return {"take_profit": 0, "stop_loss": 0, "trail_start": 0, "trail_back": 0}
+    return {
+        "take_profit": 0,
+        "stop_loss": 0,
+        "trail_start": 0,
+        "trail_back": 0
+    }
 
 
 def write_log(df_5m, big_trend, market, strategy, signal, score, exit_reason="-"):
@@ -510,6 +553,7 @@ def write_log(df_5m, big_trend, market, strategy, signal, score, exit_reason="-"
 def close_position(df_5m, big_trend, market, score, exit_reason):
     global position_open, entry_price, entry_time, entry_market
     global entry_big_trend, entry_strategy, max_pnl
+    global entry_take_profit, entry_stop_loss, entry_trail_start, entry_trail_back
     global signal_count, total_trades, win_trades, loss_trades
     global consecutive_losses, cumulative_pnl, strategy_enabled
     global last_exit_time
@@ -556,6 +600,11 @@ def close_position(df_5m, big_trend, market, score, exit_reason):
     entry_strategy = None
     max_pnl = 0.0
 
+    entry_take_profit = 0.0
+    entry_stop_loss = 0.0
+    entry_trail_start = 0.0
+    entry_trail_back = 0.0
+
     save_state()
 
     if consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
@@ -583,7 +632,12 @@ def check_exit(df_5m, big_trend, market, score):
         max_pnl = gross_pnl
         save_state()
 
-    params = get_risk_params(entry_strategy)
+    params = {
+        "take_profit": entry_take_profit,
+        "stop_loss": entry_stop_loss,
+        "trail_start": entry_trail_start,
+        "trail_back": entry_trail_back
+    }
 
     if gross_pnl <= params["stop_loss"]:
         close_position(df_5m, big_trend, market, score, "STOP_LOSS")
@@ -608,6 +662,7 @@ def check_exit(df_5m, big_trend, market, score):
 def check_entry(df_5m, big_trend, market, strategy, score):
     global position_open, entry_price, entry_time, entry_market
     global entry_big_trend, entry_strategy, max_pnl, signal_count
+    global entry_take_profit, entry_stop_loss, entry_trail_start, entry_trail_back
 
     if not strategy_enabled:
         return
@@ -636,6 +691,13 @@ def check_entry(df_5m, big_trend, market, strategy, score):
     entry_strategy = strategy
     max_pnl = 0.0
 
+    params = get_risk_params(strategy)
+
+    entry_take_profit = params["take_profit"]
+    entry_stop_loss = params["stop_loss"]
+    entry_trail_start = params["trail_start"]
+    entry_trail_back = params["trail_back"]
+
     save_state()
 
     send_telegram(
@@ -646,7 +708,9 @@ def check_entry(df_5m, big_trend, market, strategy, score):
         f"전략: {strategy}\n"
         f"가격: {price:.2f}\n"
         f"RSI: {rsi:.2f}\n"
-        f"진입점수: {score}"
+        f"진입점수: {score}\n"
+        f"익절: {entry_take_profit}%\n"
+        f"손절: {entry_stop_loss}%"
     )
 
     write_log(df_5m, big_trend, market, strategy, "BUY", score, "-")
@@ -685,7 +749,9 @@ def send_hourly_report(df_5m, big_trend, market, strategy, score):
         f"전략활성화: {strategy_enabled}\n"
         f"포지션: {position_open}\n"
         f"진입가: {entry_price:.2f}\n"
-        f"현재수익률: {get_net_pnl(price):.4f}%\n\n"
+        f"현재수익률: {get_net_pnl(price):.4f}%\n"
+        f"진입익절: {entry_take_profit}%\n"
+        f"진입손절: {entry_stop_loss}%\n\n"
         f"총 거래: {total_trades}\n"
         f"승률: {get_win_rate()}%\n"
         f"누적손익: {cumulative_pnl:.4f}%\n"
@@ -706,6 +772,8 @@ def run_bot():
     score = calculate_score(df_5m, big_trend, market, strategy)
 
     if (big_trend != last_big_trend or market != last_market) and score >= 50:
+        # 시장상태 변경 알림은 피로도가 높아서 현재 비활성화
+        # 필요하면 아래 send_telegram 주석 해제
         # send_telegram(
         #     f"📊 시장상태 변경\n\n"
         #     f"장기추세: {big_trend}\n"
@@ -734,6 +802,8 @@ send_telegram(
     f"복구 포지션: {position_open}\n"
     f"진입가: {entry_price}\n"
     f"전략: {entry_strategy}\n"
+    f"진입익절: {entry_take_profit}%\n"
+    f"진입손절: {entry_stop_loss}%\n"
     f"누적손익: {cumulative_pnl:.4f}%"
 )
 
