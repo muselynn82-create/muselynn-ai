@@ -202,7 +202,6 @@ def calculate_score(now, params):
     price = now["close"]
     score = 0
 
-    # 핵심 조건: 상승장 깊은 눌림 + 아래꼬리/양봉 반등
     if (
         now["rsi"] < params["rsi_limit"]
         and now["low"] <= now["bb_lower"]
@@ -210,15 +209,14 @@ def calculate_score(now, params):
     ):
         score += 70
 
-    # 보조 조건
     if price > now["ema100"]:
         score += 15
 
-    if now["volume_ratio"] >= params["volume_ratio"]:
-        score += 10
+    if now["ema20"] > now["ema50"]:
+        score += 15
 
-    if price >= now["ema20"] * 0.995:
-        score += 10
+    if now["volume"] > now["volume_ma"] * 2.0:
+        score += 20
 
     return score
 
