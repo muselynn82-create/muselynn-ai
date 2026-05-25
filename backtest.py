@@ -152,12 +152,12 @@ def detect_big_trend(h1, h4):
     if h1["atr_rate"] > 0.03 or h4["atr_rate"] > 0.055:
         return "BIG_CRASH"
 
-    # 완화된 상승추세 조건
-    if h4["close"] > h4["ema200"]:
+    # 상승추세: 4시간 장기 상승 + 1시간 단기 지지
+    if h4["close"] > h4["ema200"] and h1["close"] > h1["ema50"]:
         return "BIG_BULL"
 
-    # 완화된 하락추세 조건
-    if h4["close"] < h4["ema200"]:
+    # 하락추세: 4시간 장기 하락 + 1시간 단기 약세
+    if h4["close"] < h4["ema200"] and h1["close"] < h1["ema50"]:
         return "BIG_BEAR"
 
     return "BIG_SIDE"
@@ -210,7 +210,7 @@ def calculate_score(now, prev, big_trend, market, strategy):
     score = 0
 
     if strategy == "SIDE_RSI_BB":
-        if rsi < 45:
+        if rsi < 35:
             score += 25
         if price <= now["bb_lower"] * 1.004:
             score += 25
@@ -238,6 +238,8 @@ def calculate_score(now, prev, big_trend, market, strategy):
             score += 25
         if big_trend == "BIG_BULL":
             score += 15
+        if volume_ratio >= 1.0:
+            score += 15
 
     elif strategy == "BULL_PULLBACK_LIGHT":
         if 38 <= rsi <= 55:
@@ -256,6 +258,8 @@ def calculate_score(now, prev, big_trend, market, strategy):
             score += 30
         if price > now["ema100"]:
             score += 20
+        if volume_ratio >= 1.0:
+            score += 15
 
     elif strategy == "BEAR_SCALP":
         if rsi < 30:
