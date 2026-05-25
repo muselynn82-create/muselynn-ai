@@ -173,7 +173,7 @@ def calculate_score(now, strategy):
 
         # 핵심 조건: 깊은 과매도 + BB 하단 반등
         if (
-            rsi < 29
+            rsi < 32
             and price <= now["bb_lower"]
             and now["close"] > now["open"]
         ):
@@ -183,7 +183,7 @@ def calculate_score(now, strategy):
         if price > now["ema100"]:
             score += 15
 
-        if volume_ratio >= 1.2:
+        if volume_ratio >= 1.5:
             score += 10
 
         if price >= now["ema20"] * 0.995:
@@ -194,10 +194,10 @@ def calculate_score(now, strategy):
 def get_risk_params(strategy):
     if strategy == "BULL_DEEP_PULLBACK":
         return {
-            "take_profit": 1.10,
+            "take_profit": 1.80,
             "stop_loss": -0.50,
-            "trail_start": 0.70,
-            "trail_back": 0.32
+            "trail_start": 1.00,
+            "trail_back": 0.50
         }
 
     return {
