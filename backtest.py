@@ -174,7 +174,7 @@ def calculate_score(now, strategy):
         # 핵심 조건: 깊은 과매도 + BB 하단 반등
         if (
             rsi < 32
-            and price <= now["bb_lower"]
+            and now["low"] <= now["bb_lower"]
             and now["close"] > now["open"]
         ):
             score += 70
@@ -271,7 +271,7 @@ def run_backtest(df_15m, df_1h, df_4h):
         # EXIT
         if position_open:
             gross_pnl = ((price - entry_price) / entry_price) * 100
-            net_pnl = gross_pnl - FEE_ROUND_TRIP
+            net_pnl = ((1 + gross_pnl / 100) * (1 - FEE_ROUND_TRIP / 100) - 1) * 100
 
             if gross_pnl > max_pnl:
                 max_pnl = gross_pnl
