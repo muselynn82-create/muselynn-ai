@@ -59,7 +59,7 @@ except gspread.WorksheetNotFound:
 
 SYMBOL = "BTCUSDT"
 
-ENTRY_SCORE = 60
+ENTRY_SCORE = 70
 FEE_ROUND_TRIP = 0.20
 
 REENTRY_COOLDOWN_MINUTES = 15
@@ -447,11 +447,20 @@ def calculate_score(df_5m, big_trend, market, strategy):
             score += 10
 
     elif strategy == "BULL_DEEP_PULLBACK":
-        if rsi < 30:
-            score += 40
-        if price <= now["bb_lower"] * 1.004:
-            score += 30
+        if (
+            rsi < 26
+            and now["low"] <= now["bb_lower"]
+            and now["close"] > now["open"]
+        ):
+            score += 70
+
         if price > now["ema100"]:
+            score += 15
+
+        if now["ema20"] > now["ema50"]:
+            score += 15
+
+        if now["volume"] > now["volume_ma"] * 2.0:
             score += 20
 
     elif strategy == "BEAR_SCALP":
@@ -502,10 +511,10 @@ def get_risk_params(strategy):
 
     if strategy == "BULL_DEEP_PULLBACK":
         return {
-            "take_profit": 0.85,
-            "stop_loss": -0.55,
-            "trail_start": 0.55,
-            "trail_back": 0.28
+            "take_profit": 1.80,
+            "stop_loss": -1.00,
+            "trail_start": 1.50,
+            "trail_back": 0.70
         }
 
     if strategy == "BEAR_SCALP":
