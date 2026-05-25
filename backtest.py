@@ -165,13 +165,12 @@ def get_strategy(big_trend):
 def calculate_score(now, strategy):
     price = now["close"]
     rsi = now["rsi"]
-    volume_ratio = now["volume_ratio"]
 
     score = 0
 
     if strategy == "BULL_DEEP_PULLBACK":
 
-        # 핵심 조건: 깊은 과매도 + BB 하단 반등
+        # 핵심 조건
         if (
             rsi < 28
             and now["low"] <= now["bb_lower"]
@@ -179,15 +178,17 @@ def calculate_score(now, strategy):
         ):
             score += 70
 
-        # 보조 조건
+        # 장기 상승 추세
         if price > now["ema100"]:
             score += 15
 
-        if volume_ratio >= 1.5:
-            score += 10
+        # 단기 추세 가속
+        if now["ema20"] > now["ema50"]:
+            score += 15
 
-        if price >= now["ema20"] * 0.995:
-            score += 10
+        # 거래량 폭발
+        if now["volume"] > now["volume_ma"] * 2:
+            score += 20
 
     return score
 
@@ -195,9 +196,9 @@ def get_risk_params(strategy):
     if strategy == "BULL_DEEP_PULLBACK":
         return {
             "take_profit": 1.80,
-            "stop_loss": -0.50,
+            "stop_loss": -1.00,
             "trail_start": 1.00,
-            "trail_back": 0.50
+            "trail_back": 0.70
         }
 
     return {
