@@ -21,7 +21,7 @@ SYMBOL = "BTCUSDT"
 BACKTEST_DAYS = 365
 FEE_ROUND_TRIP = 0.20
 
-ENTRY_SCORE = 45
+ENTRY_SCORE = 60
 MIN_HOLD_MINUTES = 5
 MAX_CONSECUTIVE_LOSSES = 5
 
@@ -197,8 +197,7 @@ def get_strategy(big_trend, market):
             return "SIDE_DEEP_REBOUND"
 
     if big_trend == "BIG_BEAR":
-        if market in ["SIDE", "BEAR"]:
-            return "BEAR_SCALP"
+        return "NO_TRADE"
 
     return "NO_TRADE"
 
@@ -215,7 +214,7 @@ def calculate_score(now, prev, big_trend, market, strategy):
             score += 25
         if price <= now["bb_lower"] * 1.004:
             score += 25
-        if price > now["bb_lower"]:
+        if price <= now["bb_lower"] * 1.003:
             score += 20
         if market == "SIDE":
             score += 15
