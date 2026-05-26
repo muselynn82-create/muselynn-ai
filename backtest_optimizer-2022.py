@@ -198,6 +198,7 @@ def detect_big_trend(h1, h4):
 
     if (
         h4["close"] > h4["ema200"]
+        and h4["ema50"] > h4["ema200"]
         and h1["close"] > h1["ema50"]
         and h1["ema20"] > h1["ema50"]
     ):
