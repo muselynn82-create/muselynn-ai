@@ -14,9 +14,9 @@ from binance.client import Client
 # CONFIG
 # =========================
 
-API_KEY = os.getenv("BINANCE_API_KEY")
-API_SECRET = os.getenv("BINANCE_SECRET_KEY")
-client = Client(API_KEY, API_SECRET)
+RESULT_SHEET_NAME = "RESULTS365"
+TOP_SHEET_NAME = "TOP20365"
+RUN_LOG_SHEET_NAME = "RUNLOG365"
 
 SYMBOL = "BTCUSDT"
 
@@ -37,8 +37,8 @@ RUN_LOG_SHEET_NAME = "OPTIMIZER_RUN_LOG_365"
 # 너무 넓히면 오래 걸리니 1차 자동 연구 범위
 PARAM_GRID = {
     "strategy_type": ["LONG_PULLBACK", "DEADCAT_SHORT"],
-    "entry_score": [70, 80],
-    "rsi_limit": [26, 28, 30],
+    "entry_score": [60, 70, 80],
+    "rsi_limit": [26, 30, 35],
     "take_profit": [1.2, 1.8, 2.5],
     "stop_loss": [-1.0, -1.2, -1.5],
     "trail_start": [1.0, 1.5, 2.0],
@@ -239,21 +239,32 @@ def calculate_score(now, params):
 
     elif params["strategy_type"] == "DEADCAT_SHORT":
 
+        # 추세 붕괴 확인
         if (
-            now["rsi"] > 100 - params["rsi_limit"]
-            and now["high"] >= now["bb_upper"]
+            price < now["ema20"]
+            and now["ema20"] < now["ema50"]
             and now["close"] < now["open"]
         ):
-            score += 70
+            score += 40
 
-        if price < now["ema100"]:
-            score += 15
+        # 반등 후 음봉 전환
+        if (
+            now["high"] >= now["ema20"] * 0.998
+            and now["close"] < now["open"]
+        ):
+            score += 25
 
-        if now["volume_ratio"] >= 1.0:
-            score += 10
+    # RSI 약세
+    if now["rsi"] < 45:
+        score += 20
 
-        if price <= now["ema20"] * 1.005:
-            score += 10
+    # 거래량 증가
+    if now["volume_ratio"] >= 1.2:
+        score += 15
+
+    # 장기 하락 확인
+    if price < now["ema100"]:
+        score += 20
 
     return score
 
