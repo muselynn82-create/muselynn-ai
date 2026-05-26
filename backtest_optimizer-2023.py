@@ -21,7 +21,7 @@ client = Client(API_KEY, API_SECRET)
 SYMBOL = "BTCUSDT"
 
 START_DATE = "2023-01-01"
-END_DATE = "2023-09-31"
+END_DATE = "2023-09-30"
 
 FEE_ROUND_TRIP = 0.20
 KST = ZoneInfo("Asia/Seoul")
