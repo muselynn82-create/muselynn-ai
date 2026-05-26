@@ -5,22 +5,36 @@ from zoneinfo import ZoneInfo
 from itertools import product
 
 import pandas as pd
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 from binance.client import Client
 
+
+# =========================
+# CONFIG
+# =========================
 
 API_KEY = os.getenv("BINANCE_API_KEY")
 API_SECRET = os.getenv("BINANCE_SECRET_KEY")
 client = Client(API_KEY, API_SECRET)
 
 SYMBOL = "BTCUSDT"
-BACKTEST_DAYS = 365
+
+START_DATE = "2022-01-01"
+END_DATE = "2022-12-31"
+
 FEE_ROUND_TRIP = 0.20
 KST = ZoneInfo("Asia/Seoul")
 
-OUTPUT_RESULTS = "optimizer_results.csv"
-OUTPUT_TOP = "optimizer_top20.txt"
-OUTPUT_TRADES_BEST = "optimizer_best_trades.csv"
+GOOGLE_CLIENT_EMAIL = os.getenv("GOOGLE_CLIENT_EMAIL")
+GOOGLE_PRIVATE_KEY = os.getenv("GOOGLE_PRIVATE_KEY").replace("\\n", "\n")
+GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME")
 
+RESULT_SHEET_NAME = "OPTIMIZER_RESULTS"
+TOP_SHEET_NAME = "OPTIMIZER_TOP20"
+RUN_LOG_SHEET_NAME = "OPTIMIZER_RUN_LOG"
+
+# 너무 넓히면 오래 걸리니 1차 자동 연구 범위
 PARAM_GRID = {
     "entry_score": [70, 75, 80, 85],
     "rsi_limit": [26, 28, 30, 32],
@@ -35,6 +49,56 @@ MIN_TRADES = 10
 MAX_DRAWDOWN_LIMIT = -20.0
 
 
+# =========================
+# GOOGLE SHEETS
+# =========================
+
+def init_gspread():
+    scope = [
+        "https://spreadsheets.google.com/feeds",
+        "https://www.googleapis.com/auth/drive"
+    ]
+
+    creds_dict = {
+        "type": "service_account",
+        "project_id": os.getenv("GOOGLE_PROJECT_ID"),
+        "private_key_id": os.getenv("GOOGLE_PRIVATE_KEY_ID"),
+        "private_key": GOOGLE_PRIVATE_KEY,
+        "client_email": GOOGLE_CLIENT_EMAIL,
+        "client_id": os.getenv("GOOGLE_CLIENT_ID"),
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+        "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/{GOOGLE_CLIENT_EMAIL}"
+    }
+
+    credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    gc = gspread.authorize(credentials)
+    return gc.open(GOOGLE_SHEET_NAME)
+
+
+def get_or_create_ws(spreadsheet, title, rows=2000, cols=40):
+    try:
+        return spreadsheet.worksheet(title)
+    except gspread.WorksheetNotFound:
+        return spreadsheet.add_worksheet(title=title, rows=rows, cols=cols)
+
+
+def clear_and_write(ws, headers, rows):
+    ws.clear()
+    values = [headers] + rows
+    if values:
+        ws.update(range_name="A1", values=values)
+
+
+def append_run_log(ws, message):
+    ws.append_row([now_kst(), message])
+
+
+# =========================
+# HELPERS
+# =========================
+
 def now_kst():
     return datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -45,6 +109,7 @@ def dt_to_ms(dt):
 
 def fetch_klines(symbol, interval, start_dt, end_dt):
     print(f"Downloading {symbol} {interval} data...", flush=True)
+
     all_rows = []
     start_ms = dt_to_ms(start_dt)
     end_ms = dt_to_ms(end_dt)
@@ -80,6 +145,7 @@ def fetch_klines(symbol, interval, start_dt, end_dt):
         df[col] = df[col].astype(float)
 
     df["datetime"] = pd.to_datetime(df["time"], unit="ms", utc=True).dt.tz_convert("Asia/Seoul")
+
     return df
 
 
@@ -118,8 +184,13 @@ def calculate_indicators(df):
 
     df["volume_ma"] = df["volume"].rolling(20).mean()
     df["volume_ratio"] = df["volume"] / df["volume_ma"]
+
     return df
 
+
+# =========================
+# STRATEGY
+# =========================
 
 def detect_big_trend(h1, h4):
     if h1["atr_rate"] > 0.03 or h4["atr_rate"] > 0.055:
@@ -128,16 +199,14 @@ def detect_big_trend(h1, h4):
     if h4["close"] > h4["ema200"] and h1["close"] > h1["ema50"]:
         return "BIG_BULL"
 
-    if h4["close"] < h4["ema200"] and h1["close"] < h1["ema50"]:
-        return "BIG_BEAR"
-
-    return "BIG_SIDE"
+    return "NO_TRADE"
 
 
 def calculate_score(now, params):
     price = now["close"]
     score = 0
 
+    # 핵심 조건: 상승장 깊은 눌림 + 아래꼬리/양봉 반등
     if (
         now["rsi"] < params["rsi_limit"]
         and now["low"] <= now["bb_lower"]
@@ -145,6 +214,7 @@ def calculate_score(now, params):
     ):
         score += 70
 
+    # 보조 조건
     if price > now["ema100"]:
         score += 15
 
@@ -157,7 +227,7 @@ def calculate_score(now, params):
     return score
 
 
-def run_backtest(df_15m, df_1h, df_4h, params):
+def run_backtest(df_15m, df_1h, df_4h, params, collect_trades=False):
     position_open = False
     entry_price = 0.0
     entry_time = None
@@ -179,6 +249,7 @@ def run_backtest(df_15m, df_1h, df_4h, params):
         now = df_15m.iloc[i]
         current_time = now["datetime"]
 
+        # 확정 마감된 상위 타임프레임 봉만 사용
         while i1 + 1 < len(df_1h_times) and df_1h_times[i1 + 1] <= current_time - timedelta(hours=1):
             i1 += 1
 
@@ -194,6 +265,7 @@ def run_backtest(df_15m, df_1h, df_4h, params):
         big_trend = detect_big_trend(h1, h4)
         price = now["close"]
 
+        # EXIT
         if position_open:
             gross_pnl = ((price - entry_price) / entry_price) * 100
             net_pnl = ((1 + gross_pnl / 100) * (1 - FEE_ROUND_TRIP / 100) - 1) * 100
@@ -205,14 +277,17 @@ def run_backtest(df_15m, df_1h, df_4h, params):
 
             if gross_pnl <= params["stop_loss"]:
                 exit_reason = "STOP_LOSS"
+
             elif net_pnl >= params["take_profit"]:
                 exit_reason = "TAKE_PROFIT"
+
             elif (
                 net_pnl >= 0.25
                 and max_pnl >= params["trail_start"]
                 and gross_pnl <= max_pnl - params["trail_back"]
             ):
                 exit_reason = "TRAILING_STOP"
+
             elif big_trend == "BIG_CRASH":
                 exit_reason = "BIG_CRASH_EXIT"
 
@@ -242,6 +317,7 @@ def run_backtest(df_15m, df_1h, df_4h, params):
                 max_pnl = 0.0
                 last_exit_time = current_time
 
+        # ENTRY
         if not position_open and big_trend == "BIG_BULL":
             in_cooldown = False
             if last_exit_time:
@@ -257,24 +333,10 @@ def run_backtest(df_15m, df_1h, df_4h, params):
                 entry_score = score
                 max_pnl = 0.0
 
-    return pd.DataFrame(trades), max_drawdown
-
-
-def run_stats(df_15m, df_1h, df_4h, params):
-    trades_df, max_drawdown = run_backtest(df_15m, df_1h, df_4h, params)
+    trades_df = pd.DataFrame(trades)
 
     if trades_df.empty:
-        return {
-            **params,
-            "trades": 0,
-            "win_rate": 0,
-            "total_return": 0,
-            "max_drawdown": 0,
-            "avg_win": 0,
-            "avg_loss": 0,
-            "profit_factor": 0,
-            "score_rank": -9999,
-        }
+        return empty_stats(params), trades_df
 
     wins = trades_df[trades_df["net_pnl"] > 0]
     losses = trades_df[trades_df["net_pnl"] <= 0]
@@ -286,20 +348,9 @@ def run_stats(df_15m, df_1h, df_4h, params):
     avg_loss = losses["net_pnl"].mean() if not losses.empty else 0
     profit_factor = abs(wins["net_pnl"].sum() / losses["net_pnl"].sum()) if not losses.empty and losses["net_pnl"].sum() != 0 else 999
 
-    score_rank = (
-        profit_factor * 100
-        + total_return * 2
-        + win_rate * 0.5
-        + max_drawdown * 2
-    )
+    exit_counts = trades_df["exit_reason"].value_counts().to_dict()
 
-    if total_trades < MIN_TRADES:
-        score_rank -= 100
-
-    if max_drawdown < MAX_DRAWDOWN_LIMIT:
-        score_rank -= 200
-
-    return {
+    stats = {
         **params,
         "trades": total_trades,
         "win_rate": round(win_rate, 2),
@@ -308,80 +359,119 @@ def run_stats(df_15m, df_1h, df_4h, params):
         "avg_win": round(avg_win, 4),
         "avg_loss": round(avg_loss, 4),
         "profit_factor": round(profit_factor, 4),
-        "score_rank": round(score_rank, 4),
+        "tp_count": int(exit_counts.get("TAKE_PROFIT", 0)),
+        "sl_count": int(exit_counts.get("STOP_LOSS", 0)),
+        "trail_count": int(exit_counts.get("TRAILING_STOP", 0)),
+        "crash_count": int(exit_counts.get("BIG_CRASH_EXIT", 0)),
+    }
+
+    return stats, trades_df
+
+
+def empty_stats(params):
+    return {
+        **params,
+        "trades": 0,
+        "win_rate": 0,
+        "total_return": 0,
+        "max_drawdown": 0,
+        "avg_win": 0,
+        "avg_loss": 0,
+        "profit_factor": 0,
+        "tp_count": 0,
+        "sl_count": 0,
+        "trail_count": 0,
+        "crash_count": 0,
     }
 
 
-def main():
-    print("Optimizer started:", now_kst(), flush=True)
+def score_rank(row):
+    score = 0
+    score += row["profit_factor"] * 100
+    score += row["total_return"] * 2
+    score += row["win_rate"] * 0.4
+    score += row["max_drawdown"] * 3
 
-    end_dt = datetime.now(timezone.utc)
-    start_dt = end_dt - timedelta(days=BACKTEST_DAYS + 45)
+    # 실전성 필터
+    if row["trades"] < MIN_TRADES:
+        score -= 120
+    elif row["trades"] < 20:
+        score -= 50
+    elif row["trades"] > 200:
+        score -= 40
+
+    if row["profit_factor"] < 1:
+        score -= 80
+
+    if row["total_return"] < 0:
+        score -= 50
+
+    if row["max_drawdown"] < MAX_DRAWDOWN_LIMIT:
+        score -= 200
+
+    return round(score, 4)
+
+
+# =========================
+# MAIN
+# =========================
+
+def main():
+    print("Google Sheet Optimizer started:", now_kst(), flush=True)
+
+    spreadsheet = init_gspread()
+    result_ws = get_or_create_ws(spreadsheet, RESULT_SHEET_NAME, rows=6000, cols=40)
+    top_ws = get_or_create_ws(spreadsheet, TOP_SHEET_NAME, rows=100, cols=40)
+    log_ws = get_or_create_ws(spreadsheet, RUN_LOG_SHEET_NAME, rows=1000, cols=5)
+
+    append_run_log(log_ws, "Optimizer started")
+
+    start_dt = datetime.strptime(START_DATE, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    end_dt = datetime.strptime(END_DATE, "%Y-%m-%d").replace(tzinfo=timezone.utc)
 
     df_15m = calculate_indicators(fetch_klines(SYMBOL, Client.KLINE_INTERVAL_15MINUTE, start_dt, end_dt))
     df_1h = calculate_indicators(fetch_klines(SYMBOL, Client.KLINE_INTERVAL_1HOUR, start_dt, end_dt))
     df_4h = calculate_indicators(fetch_klines(SYMBOL, Client.KLINE_INTERVAL_4HOUR, start_dt, end_dt))
 
-    cutoff = datetime.now(KST) - timedelta(days=BACKTEST_DAYS)
-    df_15m = df_15m[df_15m["datetime"] >= cutoff].reset_index(drop=True)
-
     keys = list(PARAM_GRID.keys())
     combos = list(product(*[PARAM_GRID[k] for k in keys]))
+
+    append_run_log(log_ws, f"Total combinations: {len(combos)}")
     print(f"Total combinations: {len(combos)}", flush=True)
 
     rows = []
-    best_score = -999999
-    best_params = None
 
     for idx, values in enumerate(combos, start=1):
         params = dict(zip(keys, values))
-        result = run_stats(df_15m, df_1h, df_4h, params)
-        rows.append(result)
+        stats, _ = run_backtest(df_15m, df_1h, df_4h, params)
+        stats["rank_score"] = score_rank(stats)
+        stats["run_time"] = now_kst()
+        rows.append(stats)
 
-        if result["score_rank"] > best_score:
-            best_score = result["score_rank"]
-            best_params = params
-            print(
-                f"[NEW BEST {idx}/{len(combos)}] "
-                f"PF={result['profit_factor']} "
-                f"Return={result['total_return']}% "
-                f"MDD={result['max_drawdown']}% "
-                f"Trades={result['trades']} "
-                f"Params={best_params}",
-                flush=True,
-            )
-
-        if idx % 50 == 0:
+        if idx % 100 == 0:
             print(f"Progress: {idx}/{len(combos)}", flush=True)
+            append_run_log(log_ws, f"Progress: {idx}/{len(combos)}")
 
     results_df = pd.DataFrame(rows)
     results_df = results_df.sort_values(
-        by=["score_rank", "profit_factor", "total_return"],
-        ascending=False,
+        by=["rank_score", "profit_factor", "total_return"],
+        ascending=False
     )
 
-    results_df.to_csv(OUTPUT_RESULTS, index=False, encoding="utf-8-sig")
+    top20_df = results_df.head(20)
 
-    top20 = results_df.head(20)
+    result_headers = list(results_df.columns)
+    result_rows = results_df.astype(str).values.tolist()
 
-    with open(OUTPUT_TOP, "w", encoding="utf-8") as f:
-        f.write("========== OPTIMIZER TOP 20 ==========\n")
-        f.write(top20.to_string(index=False))
-        f.write("\n")
+    top_headers = list(top20_df.columns)
+    top_rows = top20_df.astype(str).values.tolist()
 
-    if not top20.empty:
-        best = top20.iloc[0].to_dict()
-        best_params = {k: best[k] for k in keys}
-        best_trades, _ = run_backtest(df_15m, df_1h, df_4h, best_params)
-        best_trades.to_csv(OUTPUT_TRADES_BEST, index=False, encoding="utf-8-sig")
+    clear_and_write(result_ws, result_headers, result_rows)
+    clear_and_write(top_ws, top_headers, top_rows)
 
-    print("\n========== OPTIMIZER TOP 20 ==========", flush=True)
-    print(top20.to_string(index=False), flush=True)
-    print("")
-    print(f"Saved: {OUTPUT_RESULTS}", flush=True)
-    print(f"Saved: {OUTPUT_TOP}", flush=True)
-    print(f"Saved: {OUTPUT_TRADES_BEST}", flush=True)
-    print("Optimizer finished:", now_kst(), flush=True)
+    append_run_log(log_ws, "Optimizer finished")
+    print("Google Sheet Optimizer finished:", now_kst(), flush=True)
+    print("Top 20 saved to Google Sheet:", TOP_SHEET_NAME, flush=True)
 
 
 if __name__ == "__main__":
