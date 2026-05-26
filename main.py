@@ -815,7 +815,16 @@ def run_bot():
 
     check_exit(df_5m, big_trend, market, score)
     check_entry(df_5m, big_trend, market, strategy, score)
-    write_log(df_5m, big_trend, market, strategy, "WATCH", score, "-")
+    if score >= 50 or position_open:
+        write_log(
+            df_5m,
+            big_trend,
+            market,
+            strategy,
+            "WATCH",
+            score,
+            "-"
+        )
 
     print(f"{big_trend} | {market} | {strategy} | SCORE={score} | POSITION={position_open}")
 
@@ -845,9 +854,18 @@ while True:
             send_hourly_report(df_5m, big_trend, market, strategy, score)
             last_report_time = time.time()
 
-        time.sleep(60)
+        time.sleep(180)
 
     except Exception as e:
         error_count += 1
-        send_telegram(f"❌ 오류 발생\n{str(e)}", force=True)
-        time.sleep(60)
+
+        send_telegram(
+            f"❌ 오류 발생\n{str(e)}",
+            force=True
+        )
+
+        # 바이낸스 요청 제한 대응
+        if "-1003" in str(e):
+            time.sleep(600)   # 10분 대기
+        else:
+            time.sleep(180)
