@@ -429,6 +429,5 @@ def main():
     print("Google Sheet Optimizer finished:", now_kst(), flush=True)
     print("Top 20 saved to Google Sheet:", TOP_SHEET_NAME, flush=True)
 
-
 if __name__ == "__main__":
     main()
