@@ -298,53 +298,49 @@ def run_backtest(df_15m, df_1h, df_4h, params, collect_trades=False):
         price = now["close"]
 
         # EXIT
-       if position_open:
+        if position_open:
 
-           if position_side == "LONG":
-               gross_pnl = ((price - entry_price) / entry_price) * 100
-           else:
-               gross_pnl = ((entry_price - price) / entry_price) * 100
+            if position_side == "LONG":
+                gross_pnl = ((price - entry_price) / entry_price) * 100
+            else:
+                gross_pnl = ((entry_price - price) / entry_price) * 100
 
-           net_pnl = ((1 + gross_pnl / 100) * (1 - FEE_ROUND_TRIP / 100) - 1) * 100
+            net_pnl = (
+                ((1 + gross_pnl / 100) * (1 - FEE_ROUND_TRIP / 100)) - 1
+            ) * 100
 
-            if gross_pnl > max_pnl:
-                max_pnl = gross_pnl
+            max_pnl = max(max_pnl, net_pnl)
 
-            exit_reason = None
+            should_exit = False
+            exit_reason = ""
 
-            if gross_pnl <= params["stop_loss"]:
-                exit_reason = "STOP_LOSS"
+            if net_pnl >= params["take_profit"]:
+                should_exit = True
+                exit_reason = "TP"
 
-            elif net_pnl >= params["take_profit"]:
-                exit_reason = "TAKE_PROFIT"
+            elif net_pnl <= params["stop_loss"]:
+                should_exit = True
+                exit_reason = "SL"
 
             elif (
-                net_pnl >= 0.25
-                and max_pnl >= params["trail_start"]
-                and gross_pnl <= max_pnl - params["trail_back"]
+                max_pnl >= params["trail_start"]
+                and net_pnl <= max_pnl - params["trail_back"]
             ):
-                exit_reason = "TRAILING_STOP"
+                should_exit = True
+                exit_reason = "TRAIL"
 
             elif big_trend == "BIG_CRASH":
-                exit_reason = "BIG_CRASH_EXIT"
+                should_exit = True
+                exit_reason = "CRASH"
 
-            if exit_reason:
-                equity *= (1 + net_pnl / 100)
-                peak_equity = max(peak_equity, equity)
-                drawdown = ((equity - peak_equity) / peak_equity) * 100
-                max_drawdown = min(max_drawdown, drawdown)
+            if should_exit:
 
                 trades.append({
                     "entry_time": entry_time,
                     "exit_time": current_time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "entry_price": round(entry_price, 2),
-                    "exit_price": round(price, 2),
-                    "entry_score": entry_score,
-                    "gross_pnl": round(gross_pnl, 4),
-                    "net_pnl": round(net_pnl, 4),
-                    "max_pnl": round(max_pnl, 4),
-                    "exit_reason": exit_reason,
-                    "equity": round(equity, 4),
+                    "pnl": round(net_pnl, 2),
+                    "reason": exit_reason,
+                    "score": entry_score,
                 })
 
                 position_open = False
