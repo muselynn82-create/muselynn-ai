@@ -196,7 +196,11 @@ def detect_big_trend(h1, h4):
     if h1["atr_rate"] > 0.03 or h4["atr_rate"] > 0.055:
         return "BIG_CRASH"
 
-    if h4["close"] > h4["ema200"] and h1["close"] > h1["ema50"]:
+    if (
+        h4["close"] > h4["ema200"]
+        and h1["close"] > h1["ema50"]
+        and h1["ema20"] > h1["ema50"]
+    ):
         return "BIG_BULL"
 
     return "NO_TRADE"
