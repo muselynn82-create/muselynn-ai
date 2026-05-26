@@ -338,9 +338,15 @@ def run_backtest(df_15m, df_1h, df_4h, params, collect_trades=False):
                 trades.append({
                     "entry_time": entry_time,
                     "exit_time": current_time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "pnl": round(net_pnl, 2),
-                    "reason": exit_reason,
-                    "score": entry_score,
+                    "side": position_side,
+                    "entry_price": round(entry_price, 2),
+                    "exit_price": round(price, 2),
+                    "entry_score": entry_score,
+                    "gross_pnl": round(gross_pnl, 4),
+                    "net_pnl": round(net_pnl, 4),
+                    "max_pnl": round(max_pnl, 4),
+                    "exit_reason": exit_reason,
+                    "equity": round(equity, 4),
                 })
 
                 position_open = False
