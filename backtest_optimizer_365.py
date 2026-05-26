@@ -10,6 +10,9 @@ from oauth2client.service_account import ServiceAccountCredentials
 from binance.client import Client
 
 
+client = Client()
+
+
 # =========================
 # CONFIG
 # =========================
