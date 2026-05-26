@@ -32,7 +32,7 @@ GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME")
 
 RESULT_SHEET_NAME = "OPTIMIZER_RESULTS_365"
 TOP_SHEET_NAME = "OPTIMIZER_TOP20_365"
-RUN_LOG_SHEET_NAME = "OPTIMIZER_RESULTS_365"
+RUN_LOG_SHEET_NAME = "OPTIMIZER_RUN_LOG_365"
 
 # 너무 넓히면 오래 걸리니 1차 자동 연구 범위
 PARAM_GRID = {
@@ -335,6 +335,11 @@ def run_backtest(df_15m, df_1h, df_4h, params, collect_trades=False):
 
             if should_exit:
 
+            equity *= (1 + net_pnl / 100)
+            peak_equity = max(peak_equity, equity)
+            drawdown = ((equity - peak_equity) / peak_equity) * 100
+            max_drawdown = min(max_drawdown, drawdown)
+
                 trades.append({
                     "entry_time": entry_time,
                     "exit_time": current_time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -421,10 +426,10 @@ def run_backtest(df_15m, df_1h, df_4h, params, collect_trades=False):
         "avg_win": round(avg_win, 4),
         "avg_loss": round(avg_loss, 4),
         "profit_factor": round(profit_factor, 4),
-        "tp_count": int(exit_counts.get("TAKE_PROFIT", 0)),
-        "sl_count": int(exit_counts.get("STOP_LOSS", 0)),
-        "trail_count": int(exit_counts.get("TRAILING_STOP", 0)),
-        "crash_count": int(exit_counts.get("BIG_CRASH_EXIT", 0)),
+        "tp_count": int(exit_counts.get("TP", 0)),
+        "sl_count": int(exit_counts.get("SL", 0)),
+        "trail_count": int(exit_counts.get("TRAIL", 0)),
+        "crash_count": int(exit_counts.get("CRASH", 0)),
     }
 
     return stats, trades_df
