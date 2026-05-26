@@ -335,10 +335,10 @@ def run_backtest(df_15m, df_1h, df_4h, params, collect_trades=False):
 
             if should_exit:
 
-            equity *= (1 + net_pnl / 100)
-            peak_equity = max(peak_equity, equity)
-            drawdown = ((equity - peak_equity) / peak_equity) * 100
-            max_drawdown = min(max_drawdown, drawdown)
+                equity *= (1 + net_pnl / 100)
+                peak_equity = max(peak_equity, equity)
+                drawdown = ((equity - peak_equity) / peak_equity) * 100
+                max_drawdown = min(max_drawdown, drawdown)
 
                 trades.append({
                     "entry_time": entry_time,
