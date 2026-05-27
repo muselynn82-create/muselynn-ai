@@ -36,7 +36,7 @@ RUN_LOG_SHEET_NAME = "RUNLOG2022SHORT"
 
 # 너무 넓히면 오래 걸리니 1차 자동 연구 범위
 PARAM_GRID = {
-    "strategy_type": ["DEADCAT_SHORT"]
+    "strategy_type": ["DEADCAT_SHORT"],
     "entry_score": [50, 60, 70],
     "rsi_limit": [26, 30, 35],
     "take_profit": [1.2, 1.8, 2.5, 3.5],
