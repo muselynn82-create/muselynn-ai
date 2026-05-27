@@ -482,9 +482,20 @@ def send_hourly_report(candle, big_trend, strategy, score):
 
 
 def run_bot():
-    df_15m = calculate_indicators(get_klines(Client.KLINE_INTERVAL_15MINUTE, 300))
-    df_1h = calculate_indicators(get_klines(Client.KLINE_INTERVAL_1HOUR, 300))
-    df_4h = calculate_indicators(get_klines(Client.KLINE_INTERVAL_4HOUR, 300))
+    global last_report_time
+
+    df_15m = calculate_indicators(
+        get_klines(Client.KLINE_INTERVAL_15MINUTE, 300)
+    )
+
+    df_1h = calculate_indicators(
+        get_klines(Client.KLINE_INTERVAL_1HOUR, 300)
+    )
+
+    df_4h = calculate_indicators(
+        get_klines(Client.KLINE_INTERVAL_4HOUR, 300)
+    )
+
     candle = df_15m.iloc[-2]
     h1 = df_1h.iloc[-2]
     h4 = df_4h.iloc[-2]
@@ -497,8 +508,8 @@ def run_bot():
     check_entry(candle, big_trend, strategy, score)
     # 10분마다 로그 기록
     if time.time() - last_report_time >= 600:
-        write_log(df_15m, big_trend, strategy, "WATCH", score, "-")
-    last_report_time = time.time()
+        write_log(candle, big_trend, strategy, "WATCH", score, "-")
+        last_report_time = time.time()
     print(f"{now_kst()} | {candle['datetime']} | {big_trend} | {strategy} | SCORE={score} | POSITION={position_open}", flush=True)
     return candle, big_trend, strategy, score
 
