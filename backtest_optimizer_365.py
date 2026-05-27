@@ -41,24 +41,18 @@ USE_TIME_FILTER = True
 
 # 너무 넓히면 오래 걸리니 1차 연구 범위
 PARAM_GRID = {
-    # S급: 기존 연5~7% 전략
-    # A급: 더 자주 잡는 일반 눌림
-    # M급: 상승 추세 재돌파
     "strategy_type": [
         "ELITE_PULLBACK",
         "NORMAL_PULLBACK",
         "MOMENTUM_BREAK",
     ],
 
-    "entry_score": [70, 80, 90],
-
-    # ELITE는 26 근처가 핵심, NORMAL은 30~42를 주로 씀
-    "rsi_limit": [26, 30, 35, 42],
-
-    "take_profit": [1.2, 1.8, 2.5],
-    "stop_loss": [-0.8, -1.0, -1.2, -1.5],
-    "trail_start": [1.0, 1.5, 2.0],
-    "trail_back": [0.5, 0.7, 1.0],
+    "entry_score": [70, 80],
+    "rsi_limit": [26, 32],
+    "take_profit": [1.8, 2.5],
+    "stop_loss": [-1.0, -1.5],
+    "trail_start": [1.5, 2.0],
+    "trail_back": [0.7],
 }
 
 MIN_TRADES = 8
