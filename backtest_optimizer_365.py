@@ -48,7 +48,7 @@ PARAM_GRID = {
     ],
 
     "entry_score": [80],
-    "rsi_limit": [28, 30, 32, 34, 36]
+    "rsi_limit": [28, 30, 32, 34, 36],
     "take_profit": [1.8],
     "stop_loss": [-1.5],
     "trail_start": [1.5],
