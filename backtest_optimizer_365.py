@@ -2,7 +2,6 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
-from itertools import product
 
 import pandas as pd
 import gspread
@@ -10,16 +9,13 @@ from oauth2client.service_account import ServiceAccountCredentials
 from binance.client import Client
 
 
-client = Client()
-
-
 # =========================
 # CONFIG
 # =========================
 
-RESULT_SHEET_NAME = "RESULTS365"
-TOP_SHEET_NAME = "TOP20365"
-RUN_LOG_SHEET_NAME = "RUNLOG365"
+API_KEY = os.getenv("BINANCE_API_KEY")
+API_SECRET = os.getenv("BINANCE_SECRET_KEY")
+client = Client(API_KEY, API_SECRET)
 
 SYMBOL = "BTCUSDT"
 
@@ -29,37 +25,33 @@ END_DATE = "2026-05-25"
 FEE_ROUND_TRIP = 0.20
 KST = ZoneInfo("Asia/Seoul")
 
+ENTRY_SCORE = 70
+REENTRY_COOLDOWN_MINUTES = 15
+MIN_HOLD_MINUTES = 5
+
+USE_US_TIME_FILTER = True
+
+SUMMARY_SHEET_NAME = "LIVE365_SUMMARY"
+TRADES_SHEET_NAME = "LIVE365_TRADES"
+RUN_LOG_SHEET_NAME = "LIVE365_RUNLOG"
+
 GOOGLE_CLIENT_EMAIL = os.getenv("GOOGLE_CLIENT_EMAIL")
 GOOGLE_PRIVATE_KEY = os.getenv("GOOGLE_PRIVATE_KEY").replace("\\n", "\n")
 GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME")
-
-RESULT_SHEET_NAME = "OPTIMIZER_RESULTS_365"
-TOP_SHEET_NAME = "OPTIMIZER_TOP20_365"
-RUN_LOG_SHEET_NAME = "OPTIMIZER_RUN_LOG_365"
-
-# 너무 넓히면 오래 걸리니 1차 자동 연구 범위
-PARAM_GRID = {
-    "strategy_type": ["LONG_PULLBACK", "DEADCAT_SHORT"],
-    "entry_score": [60, 70, 80],
-    "rsi_limit": [26, 30, 35],
-    "take_profit": [1.2, 1.8, 2.5],
-    "stop_loss": [-1.0, -1.2, -1.5],
-    "trail_start": [1.0, 1.5, 2.0],
-    "trail_back": [0.5, 0.7, 1.0],
-}
-
-MIN_TRADES = 10
-MAX_DRAWDOWN_LIMIT = -20.0
 
 
 # =========================
 # GOOGLE SHEETS
 # =========================
 
+def now_kst():
+    return datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+
+
 def init_gspread():
     scope = [
         "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/drive"
+        "https://www.googleapis.com/auth/drive",
     ]
 
     creds_dict = {
@@ -72,7 +64,7 @@ def init_gspread():
         "auth_uri": "https://accounts.google.com/o/oauth2/auth",
         "token_uri": "https://oauth2.googleapis.com/token",
         "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-        "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/{GOOGLE_CLIENT_EMAIL}"
+        "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/{GOOGLE_CLIENT_EMAIL}",
     }
 
     credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
@@ -90,8 +82,7 @@ def get_or_create_ws(spreadsheet, title, rows=2000, cols=40):
 def clear_and_write(ws, headers, rows):
     ws.clear()
     values = [headers] + rows
-    if values:
-        ws.update(range_name="A1", values=values)
+    ws.update(range_name="A1", values=values)
 
 
 def append_run_log(ws, message):
@@ -99,12 +90,8 @@ def append_run_log(ws, message):
 
 
 # =========================
-# HELPERS
+# DATA
 # =========================
-
-def now_kst():
-    return datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
-
 
 def dt_to_ms(dt):
     return int(dt.timestamp() * 1000)
@@ -136,7 +123,7 @@ def fetch_klines(symbol, interval, start_dt, end_dt):
     df = pd.DataFrame(all_rows, columns=[
         "time", "open", "high", "low", "close", "volume",
         "close_time", "quote_asset_volume", "trades",
-        "taker_buy_base", "taker_buy_quote", "ignore"
+        "taker_buy_base", "taker_buy_quote", "ignore",
     ])
 
     if df.empty:
@@ -148,7 +135,6 @@ def fetch_klines(symbol, interval, start_dt, end_dt):
         df[col] = df[col].astype(float)
 
     df["datetime"] = pd.to_datetime(df["time"], unit="ms", utc=True).dt.tz_convert("Asia/Seoul")
-
     return df
 
 
@@ -171,6 +157,7 @@ def calculate_indicators(df):
     std = close.rolling(20).std()
     df["bb_upper"] = df["bb_mid"] + std * 2
     df["bb_lower"] = df["bb_mid"] - std * 2
+    df["bb_width"] = (df["bb_upper"] - df["bb_lower"]) / df["bb_mid"]
 
     df["ema20"] = close.ewm(span=20, adjust=False).mean()
     df["ema50"] = close.ewm(span=50, adjust=False).mean()
@@ -192,40 +179,121 @@ def calculate_indicators(df):
 
 
 # =========================
-# STRATEGY
+# LIVE BOT STRATEGY LOGIC
 # =========================
 
 def detect_big_trend(h1, h4):
+    h1_bull = h1["close"] > h1["ema50"] > h1["ema200"]
+    h4_bull = h4["close"] > h4["ema50"] > h4["ema200"]
+
+    h1_bear = h1["close"] < h1["ema50"] < h1["ema200"]
+    h4_bear = h4["close"] < h4["ema50"] < h4["ema200"]
+
     if h1["atr_rate"] > 0.03 or h4["atr_rate"] > 0.055:
         return "BIG_CRASH"
 
-    if (
-        h4["close"] > h4["ema200"]
-        and h4["ema50"] > h4["ema200"]
-        and h1["close"] > h1["ema50"]
-        and h1["ema20"] > h1["ema50"]
-    ):
+    if h1_bull and h4_bull:
         return "BIG_BULL"
 
-    if (
-        h4["close"] < h4["ema200"]
-        and h4["ema50"] < h4["ema200"]
-        and h1["close"] < h1["ema50"]
-        and h1["ema20"] < h1["ema50"]
-    ):
+    if h1_bear and h4_bear:
         return "BIG_BEAR"
+
+    return "BIG_SIDE"
+
+
+def detect_short_market(now):
+    price = now["close"]
+
+    if now["atr_rate"] > 0.014 or now["bb_width"] > 0.065:
+        return "VOLATILE"
+
+    if price > now["ema20"] > now["ema50"] > now["ema100"]:
+        return "BULL"
+
+    if price < now["ema20"] < now["ema50"] < now["ema100"]:
+        return "BEAR"
+
+    return "SIDE"
+
+
+def get_strategy(big_trend, market):
+    if big_trend == "BIG_CRASH":
+        return "NO_TRADE_CRASH"
+
+    if big_trend == "BIG_BULL":
+        if market in ["BULL", "SIDE"]:
+            return "BULL_PULLBACK"
+        if market == "BEAR":
+            return "BULL_DEEP_PULLBACK"
+
+    if big_trend == "BIG_SIDE":
+        if market == "SIDE":
+            return "SIDE_RSI_BB"
+        if market == "BULL":
+            return "BULL_PULLBACK_LIGHT"
+        if market == "BEAR":
+            return "SIDE_DEEP_REBOUND"
+
+    if big_trend == "BIG_BEAR":
+        if market in ["SIDE", "BEAR"]:
+            return "BEAR_SCALP"
 
     return "NO_TRADE"
 
 
-def calculate_score(now, params):
+def calculate_score(df_5m, i, big_trend, market, strategy):
+    now = df_5m.iloc[i]
+    prev = df_5m.iloc[i - 1]
+
     price = now["close"]
+    rsi = now["rsi"]
+    volume_ratio = now["volume_ratio"]
+
     score = 0
 
-    if params["strategy_type"] == "LONG_PULLBACK":
+    if strategy == "SIDE_RSI_BB":
+        if rsi < 38:
+            score += 25
+        if price <= now["bb_lower"] * 1.004:
+            score += 25
+        if price > now["bb_lower"]:
+            score += 20
+        if market == "SIDE":
+            score += 15
+        if volume_ratio >= 0.9:
+            score += 15
 
+    elif strategy == "SIDE_DEEP_REBOUND":
+        if rsi < 28:
+            score += 35
+        if price <= now["bb_lower"] * 1.003:
+            score += 30
+        if volume_ratio >= 0.9:
+            score += 15
+
+    elif strategy == "BULL_PULLBACK":
+        if 35 <= rsi <= 55:
+            score += 35
+        if price > now["ema50"]:
+            score += 25
+        if price <= now["ema20"] * 1.004:
+            score += 25
+        if big_trend == "BIG_BULL":
+            score += 15
+
+    elif strategy == "BULL_PULLBACK_LIGHT":
+        if 38 <= rsi <= 55:
+            score += 30
+        if price > now["ema50"]:
+            score += 25
+        if price <= now["ema20"] * 1.004:
+            score += 20
+        if volume_ratio >= 0.9:
+            score += 10
+
+    elif strategy == "BULL_DEEP_PULLBACK":
         if (
-            now["rsi"] < params["rsi_limit"]
+            rsi < 26
             and now["low"] <= now["bb_lower"]
             and now["close"] > now["open"]
         ):
@@ -234,52 +302,65 @@ def calculate_score(now, params):
         if price > now["ema100"]:
             score += 15
 
-        if now["volume_ratio"] >= 1.0:
-            score += 10
+        if now["ema20"] > now["ema50"]:
+            score += 15
 
-        if price >= now["ema20"] * 0.995:
-            score += 10
+        if now["volume"] > now["volume_ma"] * 2.0:
+            score += 20
 
-    elif params["strategy_type"] == "DEADCAT_SHORT":
-
-        # 추세 붕괴 확인
-        if (
-            price < now["ema20"]
-            and now["ema20"] < now["ema50"]
-            and now["close"] < now["open"]
-        ):
-            score += 40
-
-        # 반등 후 음봉 전환
-        if (
-            now["high"] >= now["ema20"] * 0.998
-            and now["close"] < now["open"]
-        ):
-            score += 25
-
-    # RSI 약세
-    if now["rsi"] < 45:
-        score += 20
-
-    # 거래량 증가
-    if now["volume_ratio"] >= 1.2:
-        score += 15
-
-    # 장기 하락 확인
-    if price < now["ema100"]:
-        score += 20
+    elif strategy == "BEAR_SCALP":
+        if rsi < 30:
+            score += 35
+        if price <= now["bb_lower"] * 1.006:
+            score += 30
+        if volume_ratio >= 0.9:
+            score += 20
+        if prev["close"] < prev["bb_lower"] and price > now["bb_lower"]:
+            score += 20
 
     return score
 
 
-def run_backtest(df_15m, df_1h, df_4h, params, collect_trades=False):
+def get_risk_params(strategy):
+    if strategy == "SIDE_RSI_BB":
+        return {"take_profit": 0.75, "stop_loss": -0.45, "trail_start": 0.80, "trail_back": 0.40}
+    if strategy == "SIDE_DEEP_REBOUND":
+        return {"take_profit": 0.60, "stop_loss": -0.40, "trail_start": 0.40, "trail_back": 0.22}
+    if strategy == "BULL_PULLBACK":
+        return {"take_profit": 1.30, "stop_loss": -0.70, "trail_start": 0.80, "trail_back": 0.35}
+    if strategy == "BULL_PULLBACK_LIGHT":
+        return {"take_profit": 0.90, "stop_loss": -0.55, "trail_start": 0.60, "trail_back": 0.30}
+    if strategy == "BULL_DEEP_PULLBACK":
+        return {"take_profit": 1.80, "stop_loss": -1.00, "trail_start": 1.50, "trail_back": 0.70}
+    if strategy == "BEAR_SCALP":
+        return {"take_profit": 0.50, "stop_loss": -0.35, "trail_start": 0.35, "trail_back": 0.18}
+    return {"take_profit": 0, "stop_loss": 0, "trail_start": 0, "trail_back": 0}
+
+
+def is_us_trading_time(current_time):
+    hour = current_time.hour
+    return (17 <= hour <= 23) or (0 <= hour <= 5)
+
+
+# =========================
+# BACKTEST
+# =========================
+
+def run_backtest(df_5m, df_1h, df_4h, use_time_filter=True):
     position_open = False
-    position_side = None
     entry_price = 0.0
     entry_time = None
+    entry_strategy = None
+    entry_market = None
+    entry_big_trend = None
     entry_score = 0
     max_pnl = 0.0
     last_exit_time = None
+
+    entry_take_profit = 0.0
+    entry_stop_loss = 0.0
+    entry_trail_start = 0.0
+    entry_trail_back = 0.0
 
     equity = 100.0
     peak_equity = 100.0
@@ -291,11 +372,11 @@ def run_backtest(df_15m, df_1h, df_4h, params, collect_trades=False):
     i1 = 0
     i4 = 0
 
-    for i in range(220, len(df_15m)):
-        now = df_15m.iloc[i]
+    for i in range(220, len(df_5m)):
+        now = df_5m.iloc[i]
         current_time = now["datetime"]
+        price = now["close"]
 
-        # 확정 마감된 상위 타임프레임 봉만 사용
         while i1 + 1 < len(df_1h_times) and df_1h_times[i1 + 1] <= current_time - timedelta(hours=1):
             i1 += 1
 
@@ -309,55 +390,60 @@ def run_backtest(df_15m, df_1h, df_4h, params, collect_trades=False):
             continue
 
         big_trend = detect_big_trend(h1, h4)
-        price = now["close"]
+        market = detect_short_market(now)
+        strategy = get_strategy(big_trend, market)
+        score = calculate_score(df_5m, i, big_trend, market, strategy)
 
         # EXIT
         if position_open:
+            gross_pnl = ((price - entry_price) / entry_price) * 100
+            net_pnl = gross_pnl - FEE_ROUND_TRIP
+            hold_minutes = (current_time - entry_time).total_seconds() / 60
 
-            if position_side == "LONG":
-                gross_pnl = ((price - entry_price) / entry_price) * 100
+            if gross_pnl > max_pnl:
+                max_pnl = gross_pnl
+
+            exit_reason = None
+
+            if gross_pnl <= entry_stop_loss:
+                exit_reason = "STOP_LOSS"
+
+            elif hold_minutes >= MIN_HOLD_MINUTES and net_pnl >= entry_take_profit:
+                exit_reason = "TAKE_PROFIT"
+
             else:
-                gross_pnl = ((entry_price - price) / entry_price) * 100
+                min_net_for_trailing = {
+                    "SIDE_RSI_BB": 0.20,
+                    "SIDE_DEEP_REBOUND": 0.15,
+                    "BULL_PULLBACK": 0.35,
+                    "BULL_PULLBACK_LIGHT": 0.25,
+                    "BULL_DEEP_PULLBACK": 0.25,
+                    "BEAR_SCALP": 0.12,
+                }.get(entry_strategy, 0.20)
 
-            net_pnl = (
-                ((1 + gross_pnl / 100) * (1 - FEE_ROUND_TRIP / 100)) - 1
-            ) * 100
+                if (
+                    hold_minutes >= MIN_HOLD_MINUTES
+                    and net_pnl >= min_net_for_trailing
+                    and max_pnl >= entry_trail_start
+                    and gross_pnl <= max_pnl - entry_trail_back
+                ):
+                    exit_reason = "TRAILING_STOP"
 
-            max_pnl = max(max_pnl, net_pnl)
+            if exit_reason is None and big_trend == "BIG_CRASH":
+                exit_reason = "BIG_CRASH_EXIT"
 
-            should_exit = False
-            exit_reason = ""
-
-            if net_pnl >= params["take_profit"]:
-                should_exit = True
-                exit_reason = "TP"
-
-            elif net_pnl <= params["stop_loss"]:
-                should_exit = True
-                exit_reason = "SL"
-
-            elif (
-                max_pnl >= params["trail_start"]
-                and net_pnl <= max_pnl - params["trail_back"]
-            ):
-                should_exit = True
-                exit_reason = "TRAIL"
-
-            elif big_trend == "BIG_CRASH":
-                should_exit = True
-                exit_reason = "CRASH"
-
-            if should_exit:
-
+            if exit_reason:
                 equity *= (1 + net_pnl / 100)
                 peak_equity = max(peak_equity, equity)
                 drawdown = ((equity - peak_equity) / peak_equity) * 100
                 max_drawdown = min(max_drawdown, drawdown)
 
                 trades.append({
-                    "entry_time": entry_time,
+                    "entry_time": entry_time.strftime("%Y-%m-%d %H:%M:%S"),
                     "exit_time": current_time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "side": position_side,
+                    "big_trend": entry_big_trend,
+                    "market": entry_market,
+                    "strategy": entry_strategy,
                     "entry_price": round(entry_price, 2),
                     "exit_price": round(price, 2),
                     "entry_score": entry_score,
@@ -369,190 +455,131 @@ def run_backtest(df_15m, df_1h, df_4h, params, collect_trades=False):
                 })
 
                 position_open = False
-                position_side = None
                 entry_price = 0.0
                 entry_time = None
+                entry_strategy = None
+                entry_market = None
+                entry_big_trend = None
                 entry_score = 0
                 max_pnl = 0.0
                 last_exit_time = current_time
 
         # ENTRY
         if not position_open:
+            if use_time_filter and not is_us_trading_time(current_time):
+                continue
 
-            in_cooldown = False
+            if strategy.startswith("NO_TRADE"):
+                continue
 
             if last_exit_time:
                 cooldown_minutes = (current_time - last_exit_time).total_seconds() / 60
-                in_cooldown = cooldown_minutes < 3
+                if cooldown_minutes < REENTRY_COOLDOWN_MINUTES:
+                    continue
 
-            allow_entry = (
-                (
-                    params["strategy_type"] == "LONG_PULLBACK"
-                    and big_trend == "BIG_BULL"
-                )
-                or
-                (
-                    params["strategy_type"] == "DEADCAT_SHORT"
-                    and big_trend == "BIG_BEAR"
-                )
-            )
+            if score < ENTRY_SCORE:
+                continue
 
-            score = calculate_score(now, params)
+            params = get_risk_params(strategy)
+            if params["take_profit"] == 0:
+                continue
 
-            if allow_entry and not in_cooldown and score >= params["entry_score"]:
+            position_open = True
+            entry_price = price
+            entry_time = current_time
+            entry_strategy = strategy
+            entry_market = market
+            entry_big_trend = big_trend
+            entry_score = score
+            max_pnl = 0.0
 
-                position_open = True
-
-                position_side = (
-                    "LONG"
-                    if params["strategy_type"] == "LONG_PULLBACK"
-                    else "SHORT"
-                )
-
-                entry_price = price
-                entry_time = current_time.strftime("%Y-%m-%d %H:%M:%S")
-                entry_score = score
-                max_pnl = 0.0
+            entry_take_profit = params["take_profit"]
+            entry_stop_loss = params["stop_loss"]
+            entry_trail_start = params["trail_start"]
+            entry_trail_back = params["trail_back"]
 
     trades_df = pd.DataFrame(trades)
 
     if trades_df.empty:
-        return empty_stats(params), trades_df
+        return {
+            "use_time_filter": use_time_filter,
+            "trades": 0,
+            "win_rate": 0,
+            "total_return": 0,
+            "max_drawdown": 0,
+            "avg_win": 0,
+            "avg_loss": 0,
+            "profit_factor": 0,
+            "tp_count": 0,
+            "sl_count": 0,
+            "trail_count": 0,
+            "crash_count": 0,
+        }, trades_df
 
     wins = trades_df[trades_df["net_pnl"] > 0]
     losses = trades_df[trades_df["net_pnl"] <= 0]
 
-    total_trades = len(trades_df)
-    win_rate = len(wins) / total_trades * 100
+    win_rate = len(wins) / len(trades_df) * 100
     total_return = trades_df["equity"].iloc[-1] - 100
     avg_win = wins["net_pnl"].mean() if not wins.empty else 0
     avg_loss = losses["net_pnl"].mean() if not losses.empty else 0
     profit_factor = abs(wins["net_pnl"].sum() / losses["net_pnl"].sum()) if not losses.empty and losses["net_pnl"].sum() != 0 else 999
-
     exit_counts = trades_df["exit_reason"].value_counts().to_dict()
 
-    stats = {
-        **params,
-        "trades": total_trades,
+    return {
+        "use_time_filter": use_time_filter,
+        "trades": len(trades_df),
         "win_rate": round(win_rate, 2),
         "total_return": round(total_return, 2),
         "max_drawdown": round(max_drawdown, 2),
         "avg_win": round(avg_win, 4),
         "avg_loss": round(avg_loss, 4),
         "profit_factor": round(profit_factor, 4),
-        "tp_count": int(exit_counts.get("TP", 0)),
-        "sl_count": int(exit_counts.get("SL", 0)),
-        "trail_count": int(exit_counts.get("TRAIL", 0)),
-        "crash_count": int(exit_counts.get("CRASH", 0)),
-    }
+        "tp_count": int(exit_counts.get("TAKE_PROFIT", 0)),
+        "sl_count": int(exit_counts.get("STOP_LOSS", 0)),
+        "trail_count": int(exit_counts.get("TRAILING_STOP", 0)),
+        "crash_count": int(exit_counts.get("BIG_CRASH_EXIT", 0)),
+    }, trades_df
 
-    return stats, trades_df
-
-
-def empty_stats(params):
-    return {
-        **params,
-        "trades": 0,
-        "win_rate": 0,
-        "total_return": 0,
-        "max_drawdown": 0,
-        "avg_win": 0,
-        "avg_loss": 0,
-        "profit_factor": 0,
-        "tp_count": 0,
-        "sl_count": 0,
-        "trail_count": 0,
-        "crash_count": 0,
-    }
-
-
-def score_rank(row):
-    score = 0
-    score += row["profit_factor"] * 100
-    score += row["total_return"] * 2
-    score += row["win_rate"] * 0.4
-    score += row["max_drawdown"] * 3
-
-    # 실전성 필터
-    if row["trades"] < MIN_TRADES:
-        score -= 120
-    elif row["trades"] < 20:
-        score -= 50
-    elif row["trades"] > 200:
-        score -= 40
-
-    if row["profit_factor"] < 1:
-        score -= 80
-
-    if row["total_return"] < 0:
-        score -= 50
-
-    if row["max_drawdown"] < MAX_DRAWDOWN_LIMIT:
-        score -= 200
-
-    return round(score, 4)
-
-
-# =========================
-# MAIN
-# =========================
 
 def main():
-    print("Google Sheet Optimizer started:", now_kst(), flush=True)
+    print("Live Strategy 365 Backtest started:", now_kst(), flush=True)
 
     spreadsheet = init_gspread()
-    result_ws = get_or_create_ws(spreadsheet, RESULT_SHEET_NAME, rows=6000, cols=40)
-    top_ws = get_or_create_ws(spreadsheet, TOP_SHEET_NAME, rows=100, cols=40)
+    summary_ws = get_or_create_ws(spreadsheet, SUMMARY_SHEET_NAME, rows=20, cols=20)
+    trades_ws = get_or_create_ws(spreadsheet, TRADES_SHEET_NAME, rows=5000, cols=30)
     log_ws = get_or_create_ws(spreadsheet, RUN_LOG_SHEET_NAME, rows=1000, cols=5)
 
-    append_run_log(log_ws, "Optimizer started")
+    append_run_log(log_ws, "Backtest started")
 
     start_dt = datetime.strptime(START_DATE, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     end_dt = datetime.strptime(END_DATE, "%Y-%m-%d").replace(tzinfo=timezone.utc)
 
-    df_15m = calculate_indicators(fetch_klines(SYMBOL, Client.KLINE_INTERVAL_15MINUTE, start_dt, end_dt))
+    df_5m = calculate_indicators(fetch_klines(SYMBOL, Client.KLINE_INTERVAL_5MINUTE, start_dt, end_dt))
     df_1h = calculate_indicators(fetch_klines(SYMBOL, Client.KLINE_INTERVAL_1HOUR, start_dt, end_dt))
     df_4h = calculate_indicators(fetch_klines(SYMBOL, Client.KLINE_INTERVAL_4HOUR, start_dt, end_dt))
 
-    keys = list(PARAM_GRID.keys())
-    combos = list(product(*[PARAM_GRID[k] for k in keys]))
+    stats_time, trades_time = run_backtest(df_5m, df_1h, df_4h, use_time_filter=True)
+    stats_all, trades_all = run_backtest(df_5m, df_1h, df_4h, use_time_filter=False)
 
-    append_run_log(log_ws, f"Total combinations: {len(combos)}")
-    print(f"Total combinations: {len(combos)}", flush=True)
+    summary_df = pd.DataFrame([stats_time, stats_all])
+    summary_headers = list(summary_df.columns)
+    summary_rows = summary_df.astype(str).values.tolist()
+    clear_and_write(summary_ws, summary_headers, summary_rows)
 
-    rows = []
+    trades_time = trades_time.copy()
+    if not trades_time.empty:
+        trades_time.insert(0, "use_time_filter", True)
+        trade_headers = list(trades_time.columns)
+        trade_rows = trades_time.astype(str).values.tolist()
+        clear_and_write(trades_ws, trade_headers, trade_rows)
+    else:
+        clear_and_write(trades_ws, ["message"], [["No trades with time filter"]])
 
-    for idx, values in enumerate(combos, start=1):
-        params = dict(zip(keys, values))
-        stats, _ = run_backtest(df_15m, df_1h, df_4h, params)
-        stats["rank_score"] = score_rank(stats)
-        stats["run_time"] = now_kst()
-        rows.append(stats)
-
-        if idx % 100 == 0:
-            print(f"Progress: {idx}/{len(combos)}", flush=True)
-            append_run_log(log_ws, f"Progress: {idx}/{len(combos)}")
-
-    results_df = pd.DataFrame(rows)
-    results_df = results_df.sort_values(
-        by=["rank_score", "profit_factor", "total_return"],
-        ascending=False
-    )
-
-    top20_df = results_df.head(20)
-
-    result_headers = list(results_df.columns)
-    result_rows = results_df.astype(str).values.tolist()
-
-    top_headers = list(top20_df.columns)
-    top_rows = top20_df.astype(str).values.tolist()
-
-    clear_and_write(result_ws, result_headers, result_rows)
-    clear_and_write(top_ws, top_headers, top_rows)
-
-    append_run_log(log_ws, "Optimizer finished")
-    print("Google Sheet Optimizer finished:", now_kst(), flush=True)
-    print("Top 20 saved to Google Sheet:", TOP_SHEET_NAME, flush=True)
+    append_run_log(log_ws, "Backtest finished")
+    print("Live Strategy 365 Backtest finished:", now_kst(), flush=True)
+    print("Saved summary to:", SUMMARY_SHEET_NAME, flush=True)
+    print("Saved trades to:", TRADES_SHEET_NAME, flush=True)
 
 
 if __name__ == "__main__":
