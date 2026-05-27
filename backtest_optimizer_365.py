@@ -47,11 +47,11 @@ PARAM_GRID = {
         "MOMENTUM_BREAK",
     ],
 
-    "entry_score": [70, 80],
-    "rsi_limit": [26, 32],
-    "take_profit": [1.8, 2.5],
-    "stop_loss": [-1.0, -1.5],
-    "trail_start": [1.5, 2.0],
+    "entry_score": [80],
+    "rsi_limit": [28, 30, 32, 34, 36]
+    "take_profit": [1.8],
+    "stop_loss": [-1.5],
+    "trail_start": [1.5],
     "trail_back": [0.7],
 }
 
