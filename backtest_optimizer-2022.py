@@ -30,19 +30,19 @@ GOOGLE_CLIENT_EMAIL = os.getenv("GOOGLE_CLIENT_EMAIL")
 GOOGLE_PRIVATE_KEY = os.getenv("GOOGLE_PRIVATE_KEY").replace("\\n", "\n")
 GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME")
 
-RESULT_SHEET_NAME = "OPTIMIZER_RESULTS_2022"
-TOP_SHEET_NAME = "OPTIMIZER_TOP20_2022"
-RUN_LOG_SHEET_NAME = "OPTIMIZER_RESULTS_2022"
+RESULT_SHEET_NAME = "RESULTS2022SHORT"
+TOP_SHEET_NAME = "TOP2022SHORT"
+RUN_LOG_SHEET_NAME = "RUNLOG2022SHORT"
 
 # 너무 넓히면 오래 걸리니 1차 자동 연구 범위
 PARAM_GRID = {
-    "entry_score": [70],
-    "rsi_limit": [26, 28],
-    "volume_ratio": [1.0],
-    "take_profit": [1.8],
-    "stop_loss": [-1.0, -1.2],
-    "trail_start": [1.5],
-    "trail_back": [0.7],
+    "strategy_type": ["DEADCAT_SHORT"]
+    "entry_score": [50, 60, 70],
+    "rsi_limit": [26, 30, 35],
+    "take_profit": [1.2, 1.8, 2.5, 3.5],
+    "stop_loss": [-0.8, -1.0, -1.2, -1.5],
+    "trail_start": [0.8, 1.0, 1.5, 2.0],
+    "trail_back": [0.4, 0.5, 0.7, 1.0],
 }
 
 MIN_TRADES = 10
@@ -204,6 +204,14 @@ def detect_big_trend(h1, h4):
     ):
         return "BIG_BULL"
 
+    if (
+        h4["close"] < h4["ema200"]
+        and h4["ema50"] < h4["ema200"]
+        and h1["close"] < h1["ema50"]
+        and h1["ema20"] < h1["ema50"]
+    ):
+        return "BIG_BEAR"
+
     return "NO_TRADE"
 
 
@@ -211,29 +219,60 @@ def calculate_score(now, params):
     price = now["close"]
     score = 0
 
-    # 핵심 조건: 상승장 깊은 눌림 + 아래꼬리/양봉 반등
-    if (
-        now["rsi"] < params["rsi_limit"]
-        and now["low"] <= now["bb_lower"]
-        and now["close"] > now["open"]
-    ):
-        score += 70
+    # =========================
+    # LONG_PULLBACK
+    # =========================
+    if params["strategy_type"] == "LONG_PULLBACK":
 
-    # 보조 조건
-    if price > now["ema100"]:
-        score += 15
+        if (
+            now["rsi"] < params["rsi_limit"]
+            and now["low"] <= now["bb_lower"]
+            and now["close"] > now["open"]
+        ):
+            score += 70
 
-    if now["volume_ratio"] >= params["volume_ratio"]:
-        score += 10
+        if price > now["ema100"]:
+            score += 15
 
-    if price >= now["ema20"] * 0.995:
-        score += 10
+        if now["volume_ratio"] >= params["volume_ratio"]:
+            score += 10
+
+        if price >= now["ema20"] * 0.995:
+            score += 10
+
+    # =========================
+    # DEADCAT_SHORT
+    # =========================
+    elif params["strategy_type"] == "DEADCAT_SHORT":
+
+        if (
+            price < now["ema20"]
+            and now["ema20"] < now["ema50"]
+            and now["close"] < now["open"]
+        ):
+            score += 40
+
+        if (
+            now["high"] >= now["ema20"] * 0.998
+            and now["close"] < now["open"]
+        ):
+            score += 25
+
+        if now["rsi"] < 45:
+            score += 20
+
+        if now["volume_ratio"] >= 1.2:
+            score += 15
+
+        if price < now["ema100"]:
+            score += 20
 
     return score
 
 
 def run_backtest(df_15m, df_1h, df_4h, params, collect_trades=False):
     position_open = False
+    position_side = None
     entry_price = 0.0
     entry_time = None
     entry_score = 0
@@ -272,15 +311,21 @@ def run_backtest(df_15m, df_1h, df_4h, params, collect_trades=False):
 
         # EXIT
         if position_open:
-            gross_pnl = ((price - entry_price) / entry_price) * 100
-            net_pnl = ((1 + gross_pnl / 100) * (1 - FEE_ROUND_TRIP / 100) - 1) * 100
 
-            if gross_pnl > max_pnl:
-                max_pnl = gross_pnl
+            if position_side == "LONG":
+                gross_pnl = ((price - entry_price) / entry_price) * 100
+            else:
+                gross_pnl = ((entry_price - price) / entry_price) * 100
+
+            net_pnl = (
+                ((1 + gross_pnl / 100) * (1 - FEE_ROUND_TRIP / 100)) - 1
+            ) * 100
+
+            max_pnl = max(max_pnl, net_pnl)
 
             exit_reason = None
 
-            if gross_pnl <= params["stop_loss"]:
+            if net_pnl <= params["stop_loss"]:
                 exit_reason = "STOP_LOSS"
 
             elif net_pnl >= params["take_profit"]:
@@ -289,11 +334,11 @@ def run_backtest(df_15m, df_1h, df_4h, params, collect_trades=False):
             elif (
                 net_pnl >= 0.25
                 and max_pnl >= params["trail_start"]
-                and gross_pnl <= max_pnl - params["trail_back"]
+                and net_pnl <= max_pnl - params["trail_back"]
             ):
                 exit_reason = "TRAILING_STOP"
 
-            elif big_trend == "BIG_CRASH":
+            elif big_trend == "BIG_CRASH" and position_side == "LONG":
                 exit_reason = "BIG_CRASH_EXIT"
 
             if exit_reason:
@@ -305,6 +350,7 @@ def run_backtest(df_15m, df_1h, df_4h, params, collect_trades=False):
                 trades.append({
                     "entry_time": entry_time,
                     "exit_time": current_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "side": position_side,
                     "entry_price": round(entry_price, 2),
                     "exit_price": round(price, 2),
                     "entry_score": entry_score,
@@ -316,6 +362,7 @@ def run_backtest(df_15m, df_1h, df_4h, params, collect_trades=False):
                 })
 
                 position_open = False
+                position_side = None
                 entry_price = 0.0
                 entry_time = None
                 entry_score = 0
@@ -323,16 +370,34 @@ def run_backtest(df_15m, df_1h, df_4h, params, collect_trades=False):
                 last_exit_time = current_time
 
         # ENTRY
-        if not position_open and big_trend == "BIG_BULL":
+        if not position_open:
             in_cooldown = False
+
             if last_exit_time:
                 cooldown_minutes = (current_time - last_exit_time).total_seconds() / 60
                 in_cooldown = cooldown_minutes < 3
 
+            allow_entry = (
+                (
+                    params["strategy_type"] == "LONG_PULLBACK"
+                    and big_trend == "BIG_BULL"
+                )
+                or
+                (
+                    params["strategy_type"] == "DEADCAT_SHORT"
+                    and big_trend in ["BIG_BEAR", "BIG_CRASH"]
+                )
+            )
+
             score = calculate_score(now, params)
 
-            if not in_cooldown and score >= params["entry_score"]:
+            if allow_entry and not in_cooldown and score >= params["entry_score"]:
                 position_open = True
+                position_side = (
+                    "LONG"
+                    if params["strategy_type"] == "LONG_PULLBACK"
+                    else "SHORT"
+                )
                 entry_price = price
                 entry_time = current_time.strftime("%Y-%m-%d %H:%M:%S")
                 entry_score = score
