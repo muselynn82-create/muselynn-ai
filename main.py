@@ -206,7 +206,7 @@ def save_state():
         ["consecutive_losses", str(consecutive_losses)],
         ["cumulative_pnl", str(cumulative_pnl)],
     ]
-    state_sheet.update("A1:B16", [["key", "value"]] + values)
+    state_sheet.update(range_name="A1:B16", values=[["key", "value"]] + values)
 
 
 def get_klines(interval, limit):
