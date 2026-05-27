@@ -258,6 +258,11 @@ def calculate_score(now, prev, params):
         if price >= now["ema20"] * 0.995:
             score += 10
 
+        if now["ema20_slope"] > 0:
+            score += 15
+        else:
+            score -= 20
+    
     # A급 일반 눌림: RSI를 덜 깊게 보고 EMA20/50 부근 재상승을 노림
     elif strategy == "NORMAL_PULLBACK":
         if 28 <= now["rsi"] <= params["rsi_limit"]:
@@ -290,8 +295,10 @@ def calculate_score(now, prev, params):
         if now["ema20"] > now["ema50"] > now["ema100"]:
             score += 25
 
-        if now["ema20_slope"] > 0.15:
-            score += 20
+        if now["ema20_slope"] > 0:
+            score += 15
+        else:
+            score -= 20
 
         if 45 <= now["rsi"] <= 68:
             score += 20
