@@ -43,8 +43,6 @@ USE_TIME_FILTER = True
 PARAM_GRID = {
     "strategy_type": [
         "ELITE_PULLBACK",
-        "NORMAL_PULLBACK",
-        "MOMENTUM_BREAK",
     ],
 
     "entry_score": [80],
