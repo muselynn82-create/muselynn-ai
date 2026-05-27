@@ -37,11 +37,11 @@ RUN_LOG_SHEET_NAME = "RUNLOG2022SHORT"
 # 너무 넓히면 오래 걸리니 1차 자동 연구 범위
 PARAM_GRID = {
     "strategy_type": ["DEADCAT_SHORT"],
-    "entry_score": [50, 60, 70],
+    "entry_score": [80, 90, 100],
     "rsi_limit": [26, 30, 35],
     "take_profit": [1.2, 1.8, 2.5, 3.5],
     "stop_loss": [-0.8, -1.0, -1.2, -1.5],
-    "trail_start": [0.8, 1.0, 1.5, 2.0],
+    "trail_start": [1.5, 2.0, 3.0],
     "trail_back": [0.4, 0.5, 0.7, 1.0],
 }
 
@@ -245,12 +245,37 @@ def calculate_score(now, params):
     # =========================
     elif params["strategy_type"] == "DEADCAT_SHORT":
 
+        # 큰 하락 추세
         if (
-            price < now["ema20"]
+            price < now["ema200"]
             and now["ema20"] < now["ema50"]
-            and now["close"] < now["open"]
         ):
-            score += 40
+            score += 30
+
+        # 단기 과열 반등
+        if (
+            now["high"] >= now["bb_upper"] * 0.995
+            and now["rsi"] > 60
+        ):
+            score += 35
+
+        # 윗꼬리 음봉
+        body = abs(now["close"] - now["open"])
+        upper_wick = now["high"] - max(now["close"], now["open"])
+
+        if (
+            now["close"] < now["open"]
+            and upper_wick > body * 1.5
+        ):
+            score += 30
+
+        # 거래량 터진 실패 반등
+        if now["volume_ratio"] >= 1.5:
+            score += 15
+
+        # 변동성 너무 크면 회피
+        if now["atr_rate"] > 0.025:
+            score -= 40
 
         if (
             now["high"] >= now["ema20"] * 0.998
@@ -258,8 +283,8 @@ def calculate_score(now, params):
         ):
             score += 25
 
-        if now["rsi"] < 45:
-            score += 20
+        if now["rsi"] > 60:
+            score += 15
 
         if now["volume_ratio"] >= 1.2:
             score += 15
@@ -370,6 +395,14 @@ def run_backtest(df_15m, df_1h, df_4h, params, collect_trades=False):
                 last_exit_time = current_time
 
         # ENTRY
+        hour = current_time.hour
+
+        if not (
+            17 <= hour <= 23
+            or 0 <= hour <= 5
+        ):
+            continue
+
         if not position_open:
             in_cooldown = False
 
@@ -467,8 +500,8 @@ def score_rank(row):
         score -= 120
     elif row["trades"] < 20:
         score -= 50
-    elif row["trades"] > 200:
-        score -= 40
+    elif row["trades"] > 120:
+        score -= 120
 
     if row["profit_factor"] < 1:
         score -= 80
