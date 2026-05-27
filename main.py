@@ -116,6 +116,7 @@ def save_log(data):
 
 
 position_open = False
+last_report_time = 0
 entry_price = 0.0
 entry_time = None
 entry_candle_time = None
@@ -394,6 +395,7 @@ def close_position(candle, big_trend, strategy, score, exit_reason):
     signal_count += 1
     last_exit_time = now_kst()
     position_open = False
+    last_report_time = 0
     entry_price = 0.0
     entry_time = None
     entry_candle_time = None
@@ -493,8 +495,10 @@ def run_bot():
     score = calculate_score(candle, strategy)
     check_exit(candle, big_trend, strategy, score)
     check_entry(candle, big_trend, strategy, score)
-    if score >= 70 or position_open:
-        write_log(candle, big_trend, strategy, "WATCH", score, "-")
+    # 10분마다 로그 기록
+    if time.time() - last_report_time >= 600:
+        write_log(df_15m, big_trend, strategy, "WATCH", score, "-")
+    last_report_time = time.time()
     print(f"{now_kst()} | {candle['datetime']} | {big_trend} | {strategy} | SCORE={score} | POSITION={position_open}", flush=True)
     return candle, big_trend, strategy, score
 
