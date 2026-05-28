@@ -45,8 +45,8 @@ PARAM_GRID = {
         "ELITE_PULLBACK",
     ],
 
-    "entry_score": [80],
-    "rsi_limit": [28, 30, 32, 34, 36],
+    "entry_score": [75, 80],
+    "rsi_limit": [34, 36, 38],
     "take_profit": [1.8],
     "stop_loss": [-1.5],
     "trail_start": [1.5],
@@ -244,7 +244,7 @@ def calculate_score(now, prev, params):
     if strategy == "ELITE_PULLBACK":
         if (
             now["rsi"] < params["rsi_limit"]
-            and now["low"] <= now["bb_lower"]
+            and now["low"] <= now["bb_lower"] * 1.003
             and now["close"] > now["open"]
         ):
             score += 70
@@ -252,10 +252,7 @@ def calculate_score(now, prev, params):
         if price > now["ema100"]:
             score += 15
 
-        if now["volume_ratio"] >= 1.0:
-            score += 10
-
-        if price >= now["ema20"] * 0.995:
+        if now["volume_ratio"] >= 0.85:
             score += 10
 
         if now["ema20_slope"] > 0:
