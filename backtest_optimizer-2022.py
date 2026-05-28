@@ -20,6 +20,7 @@ client = Client(API_KEY, API_SECRET)
 
 SYMBOL = "BTCUSDT"
 
+# 최근 1년 고정
 START_DATE = "2022-01-01"
 END_DATE = "2022-12-31"
 
@@ -27,26 +28,32 @@ FEE_ROUND_TRIP = 0.20
 KST = ZoneInfo("Asia/Seoul")
 
 GOOGLE_CLIENT_EMAIL = os.getenv("GOOGLE_CLIENT_EMAIL")
-GOOGLE_PRIVATE_KEY = os.getenv("GOOGLE_PRIVATE_KEY").replace("\\n", "\n")
+GOOGLE_PRIVATE_KEY = os.getenv("GOOGLE_PRIVATE_KEY", "").replace("\\n", "\n")
 GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME")
 
-RESULT_SHEET_NAME = "RESULTS2022SHORT"
-TOP_SHEET_NAME = "TOP2022SHORT"
-RUN_LOG_SHEET_NAME = "RUNLOG2022SHORT"
+RESULT_SHEET_NAME = "TIER2022_RESULTS"
+TOP_SHEET_NAME = "TIER2022_TOP20"
+TRADES_SHEET_NAME = "TIER2022_TRADES"
+RUN_LOG_SHEET_NAME = "TIER2022_RUNLOG"
 
-# 너무 넓히면 오래 걸리니 1차 자동 연구 범위
+# 미국장 시간 필터 고정
+USE_TIME_FILTER = True
+
+# 너무 넓히면 오래 걸리니 1차 연구 범위
 PARAM_GRID = {
-    "strategy_type": ["TREND_SHORT"],
+    "strategy_type": [
+        "TREND_SHORT",
+    ],
 
     "entry_score": [70, 80, 90],
     "rsi_limit": [45, 50, 55],
     "take_profit": [1.8, 2.5, 3.5],
     "stop_loss": [-1.0, -1.2, -1.5],
     "trail_start": [1.5, 2.0],
-    "trail_back": [0.7, 1.0],
+    "trail_back": [0.5, 0.7, 1.0],
 }
 
-MIN_TRADES = 10
+MIN_TRADES = 8
 MAX_DRAWDOWN_LIMIT = -20.0
 
 
@@ -54,10 +61,14 @@ MAX_DRAWDOWN_LIMIT = -20.0
 # GOOGLE SHEETS
 # =========================
 
+def now_kst():
+    return datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+
+
 def init_gspread():
     scope = [
         "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/drive"
+        "https://www.googleapis.com/auth/drive",
     ]
 
     creds_dict = {
@@ -70,7 +81,7 @@ def init_gspread():
         "auth_uri": "https://accounts.google.com/o/oauth2/auth",
         "token_uri": "https://oauth2.googleapis.com/token",
         "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-        "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/{GOOGLE_CLIENT_EMAIL}"
+        "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/{GOOGLE_CLIENT_EMAIL}",
     }
 
     credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
@@ -78,7 +89,7 @@ def init_gspread():
     return gc.open(GOOGLE_SHEET_NAME)
 
 
-def get_or_create_ws(spreadsheet, title, rows=2000, cols=40):
+def get_or_create_ws(spreadsheet, title, rows=3000, cols=40):
     try:
         return spreadsheet.worksheet(title)
     except gspread.WorksheetNotFound:
@@ -97,12 +108,8 @@ def append_run_log(ws, message):
 
 
 # =========================
-# HELPERS
+# DATA / INDICATORS
 # =========================
-
-def now_kst():
-    return datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
-
 
 def dt_to_ms(dt):
     return int(dt.timestamp() * 1000)
@@ -129,12 +136,12 @@ def fetch_klines(symbol, interval, start_dt, end_dt):
 
         all_rows.extend(candles)
         start_ms = candles[-1][0] + 1
-        time.sleep(0.08)
+        time.sleep(0.35)
 
     df = pd.DataFrame(all_rows, columns=[
         "time", "open", "high", "low", "close", "volume",
         "close_time", "quote_asset_volume", "trades",
-        "taker_buy_base", "taker_buy_quote", "ignore"
+        "taker_buy_base", "taker_buy_quote", "ignore",
     ])
 
     if df.empty:
@@ -169,6 +176,7 @@ def calculate_indicators(df):
     std = close.rolling(20).std()
     df["bb_upper"] = df["bb_mid"] + std * 2
     df["bb_lower"] = df["bb_mid"] - std * 2
+    df["bb_width"] = (df["bb_upper"] - df["bb_lower"]) / df["bb_mid"]
 
     df["ema20"] = close.ewm(span=20, adjust=False).mean()
     df["ema50"] = close.ewm(span=50, adjust=False).mean()
@@ -186,12 +194,23 @@ def calculate_indicators(df):
     df["volume_ma"] = df["volume"].rolling(20).mean()
     df["volume_ratio"] = df["volume"] / df["volume_ma"]
 
+    # 모멘텀/기울기용
+    df["prev_high_20"] = high.shift(1).rolling(20).max()
+    df["ema20_slope"] = (df["ema20"] / df["ema20"].shift(8) - 1) * 100
+
     return df
 
 
 # =========================
 # STRATEGY
 # =========================
+
+def in_us_time(candle_time):
+    if not USE_TIME_FILTER:
+        return True
+    hour = candle_time.hour
+    return (17 <= hour <= 23) or (0 <= hour <= 5)
+
 
 def detect_big_trend(h1, h4):
     if h1["atr_rate"] > 0.03 or h4["atr_rate"] > 0.055:
@@ -216,75 +235,45 @@ def detect_big_trend(h1, h4):
     return "NO_TRADE"
 
 
-def calculate_score(now, params):
+def calculate_score(now, prev, params):
     price = now["close"]
     score = 0
+    strategy = params["strategy_type"]
 
-    # =========================
-    # LONG_PULLBACK
-    # =========================
-    if params["strategy_type"] == "LONG_PULLBACK":
+    if strategy == "TREND_SHORT":
 
-        if (
-            now["rsi"] < params["rsi_limit"]
-            and now["low"] <= now["bb_lower"]
-            and now["close"] > now["open"]
-        ):
-            score += 70
-
-        if price > now["ema100"]:
-            score += 15
-
-        if now["volume_ratio"] >= params["volume_ratio"]:
-            score += 10
-
-        if price >= now["ema20"] * 0.995:
-            score += 10
-
-    # =========================
-    # TREND_SHORT
-    # =========================
-    elif params["strategy_type"] == "TREND_SHORT":
-
-        # 장기 하락 추세
         if price < now["ema200"]:
             score += 25
 
-        # 중단기 하락 정렬
         if now["ema20"] < now["ema50"] < now["ema100"]:
             score += 30
 
-        # ema20 아래 재하락
         if price < now["ema20"]:
             score += 15
 
-        # 약반등 후 꺾임
         if 40 <= now["rsi"] <= params["rsi_limit"]:
             score += 20
 
-        # 거래량 증가
         if now["volume_ratio"] >= 1.1:
             score += 10
 
-        # 음봉 마감
         if now["close"] < now["open"]:
             score += 10
 
-        # 저가 근처 마감 = 약세 지속
         if now["close"] < now["low"] + (now["high"] - now["low"]) * 0.35:
             score += 10
 
-        # 변동성 과열 회피
         if now["atr_rate"] > 0.035:
             score -= 30
+            
     return score
 
 
 def run_backtest(df_15m, df_1h, df_4h, params, collect_trades=False):
     position_open = False
-    position_side = None
     entry_price = 0.0
     entry_time = None
+    entry_big_trend = None
     entry_score = 0
     max_pnl = 0.0
     last_exit_time = None
@@ -301,9 +290,9 @@ def run_backtest(df_15m, df_1h, df_4h, params, collect_trades=False):
 
     for i in range(220, len(df_15m)):
         now = df_15m.iloc[i]
+        prev = df_15m.iloc[i - 1]
         current_time = now["datetime"]
 
-        # 확정 마감된 상위 타임프레임 봉만 사용
         while i1 + 1 < len(df_1h_times) and df_1h_times[i1 + 1] <= current_time - timedelta(hours=1):
             i1 += 1
 
@@ -313,7 +302,13 @@ def run_backtest(df_15m, df_1h, df_4h, params, collect_trades=False):
         h1 = df_1h.iloc[i1]
         h4 = df_4h.iloc[i4]
 
-        if pd.isna(now["rsi"]) or pd.isna(h1["ema200"]) or pd.isna(h4["ema200"]):
+        if (
+            pd.isna(now["rsi"])
+            or pd.isna(now["ema200"])
+            or pd.isna(now["prev_high_20"])
+            or pd.isna(h1["ema200"])
+            or pd.isna(h4["ema200"])
+        ):
             continue
 
         big_trend = detect_big_trend(h1, h4)
@@ -321,15 +316,8 @@ def run_backtest(df_15m, df_1h, df_4h, params, collect_trades=False):
 
         # EXIT
         if position_open:
-
-            if position_side == "LONG":
-                gross_pnl = ((price - entry_price) / entry_price) * 100
-            else:
-                gross_pnl = ((entry_price - price) / entry_price) * 100
-
-            net_pnl = (
-                ((1 + gross_pnl / 100) * (1 - FEE_ROUND_TRIP / 100)) - 1
-            ) * 100
+            gross_pnl = ((entry_price - price) / entry_price) * 100
+            net_pnl = ((1 + gross_pnl / 100) * (1 - FEE_ROUND_TRIP / 100) - 1) * 100
 
             max_pnl = max(max_pnl, net_pnl)
 
@@ -348,8 +336,6 @@ def run_backtest(df_15m, df_1h, df_4h, params, collect_trades=False):
             ):
                 exit_reason = "TRAILING_STOP"
 
-            elif big_trend == "BIG_CRASH" and position_side == "LONG":
-                exit_reason = "BIG_CRASH_EXIT"
 
             if exit_reason:
                 equity *= (1 + net_pnl / 100)
@@ -358,9 +344,11 @@ def run_backtest(df_15m, df_1h, df_4h, params, collect_trades=False):
                 max_drawdown = min(max_drawdown, drawdown)
 
                 trades.append({
+                    "strategy_type": params["strategy_type"],
                     "entry_time": entry_time,
                     "exit_time": current_time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "side": position_side,
+                    "entry_big_trend": entry_big_trend,
+                    "exit_big_trend": big_trend,
                     "entry_price": round(entry_price, 2),
                     "exit_price": round(price, 2),
                     "entry_score": entry_score,
@@ -372,52 +360,35 @@ def run_backtest(df_15m, df_1h, df_4h, params, collect_trades=False):
                 })
 
                 position_open = False
-                position_side = None
                 entry_price = 0.0
                 entry_time = None
+                entry_big_trend = None
                 entry_score = 0
                 max_pnl = 0.0
                 last_exit_time = current_time
 
         # ENTRY
-        hour = current_time.hour
-
-        if not (
-            17 <= hour <= 23
-            or 0 <= hour <= 5
-        ):
-            continue
-
         if not position_open:
-            in_cooldown = False
+            if not in_us_time(current_time):
+                continue
 
+            if big_trend not in ["BIG_BEAR", "BIG_CRASH"]:
+                continue
+
+            in_cooldown = False
             if last_exit_time:
                 cooldown_minutes = (current_time - last_exit_time).total_seconds() / 60
-                in_cooldown = cooldown_minutes < 3
+                in_cooldown = cooldown_minutes < 15
+            if in_cooldown:
+                continue
 
-            allow_entry = (
-                (
-                    params["strategy_type"] == "LONG_PULLBACK"
-                    and big_trend == "BIG_BULL"
-                )
-                or
-                (
-                    params["strategy_type"] == "TREND_SHORT"
-                    and big_trend in ["BIG_BEAR", "BIG_CRASH"]
-                )
-            )
+            score = calculate_score(now, prev, params)
 
-            score = calculate_score(now, params)
-
-            if allow_entry and not in_cooldown and score >= params["entry_score"]:
+            if score >= params["entry_score"]:
                 position_open = True
-                position_side = (
-                    "LONG"
-                    if params["strategy_type"] == "LONG_PULLBACK"
-                    else "SHORT"
-                )
                 entry_price = price
                 entry_time = current_time.strftime("%Y-%m-%d %H:%M:%S")
+                entry_big_trend = big_trend
                 entry_score = score
                 max_pnl = 0.0
 
@@ -435,7 +406,6 @@ def run_backtest(df_15m, df_1h, df_4h, params, collect_trades=False):
     avg_win = wins["net_pnl"].mean() if not wins.empty else 0
     avg_loss = losses["net_pnl"].mean() if not losses.empty else 0
     profit_factor = abs(wins["net_pnl"].sum() / losses["net_pnl"].sum()) if not losses.empty and losses["net_pnl"].sum() != 0 else 999
-
     exit_counts = trades_df["exit_reason"].value_counts().to_dict()
 
     stats = {
@@ -476,26 +446,30 @@ def empty_stats(params):
 def score_rank(row):
     score = 0
     score += row["profit_factor"] * 100
-    score += row["total_return"] * 2
+    score += row["total_return"] * 3
     score += row["win_rate"] * 0.4
-    score += row["max_drawdown"] * 3
+    score += row["max_drawdown"] * 4
 
-    # 실전성 필터
+    # 너무 적으면 자본 효율이 낮고, 너무 많으면 노이즈/수수료 위험
     if row["trades"] < MIN_TRADES:
-        score -= 120
-    elif row["trades"] < 20:
-        score -= 50
+        score -= 100
+    elif row["trades"] < 15:
+        score -= 40
     elif row["trades"] > 120:
-        score -= 120
-
-    if row["profit_factor"] < 1:
         score -= 80
 
+    if row["profit_factor"] < 1:
+        score -= 120
+
     if row["total_return"] < 0:
-        score -= 50
+        score -= 80
 
     if row["max_drawdown"] < MAX_DRAWDOWN_LIMIT:
         score -= 200
+
+    # 거래수 20~80을 선호
+    if 20 <= row["trades"] <= 80:
+        score += 30
 
     return round(score, 4)
 
@@ -505,21 +479,66 @@ def score_rank(row):
 # =========================
 
 def main():
-    print("Google Sheet Optimizer started:", now_kst(), flush=True)
+    print("Tiered US-Time 365 Backtest started:", now_kst(), flush=True)
 
     spreadsheet = init_gspread()
-    result_ws = get_or_create_ws(spreadsheet, RESULT_SHEET_NAME, rows=6000, cols=40)
+    result_ws = get_or_create_ws(spreadsheet, RESULT_SHEET_NAME, rows=8000, cols=40)
     top_ws = get_or_create_ws(spreadsheet, TOP_SHEET_NAME, rows=100, cols=40)
+    trades_ws = get_or_create_ws(spreadsheet, TRADES_SHEET_NAME, rows=2000, cols=30)
     log_ws = get_or_create_ws(spreadsheet, RUN_LOG_SHEET_NAME, rows=1000, cols=5)
 
-    append_run_log(log_ws, "Optimizer started")
+    append_run_log(log_ws, "Backtest started")
 
     start_dt = datetime.strptime(START_DATE, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     end_dt = datetime.strptime(END_DATE, "%Y-%m-%d").replace(tzinfo=timezone.utc)
 
-    df_15m = calculate_indicators(fetch_klines(SYMBOL, Client.KLINE_INTERVAL_15MINUTE, start_dt, end_dt))
-    df_1h = calculate_indicators(fetch_klines(SYMBOL, Client.KLINE_INTERVAL_1HOUR, start_dt, end_dt))
-    df_4h = calculate_indicators(fetch_klines(SYMBOL, Client.KLINE_INTERVAL_4HOUR, start_dt, end_dt))
+
+    # =========================
+    # CACHE DATA
+    # =========================
+    
+    if os.path.exists("btc2022_15m.pkl"):
+        print("Loading cached BTCUSDT 15m...", flush=True)
+        df_15m = pd.read_pickle("btc2022_15m.pkl")
+    else:
+        df_15m = calculate_indicators(
+            fetch_klines(
+                SYMBOL,
+                Client.KLINE_INTERVAL_15MINUTE,
+                start_dt,
+                end_dt
+            )
+        )
+        df_15m.to_pickle("btc2022_15m.pkl")
+    
+    if os.path.exists("btc2022_1h.pkl"):
+        print("Loading cached BTCUSDT 1h...", flush=True)
+        df_1h = pd.read_pickle("btc2022_1h.pkl")
+    else:
+        df_1h = calculate_indicators(
+            fetch_klines(
+                SYMBOL,
+                Client.KLINE_INTERVAL_1HOUR,
+                start_dt,
+                end_dt
+            )
+        )
+        df_1h.to_pickle("btc2022_1h.pkl")
+    
+    if os.path.exists("btc2022_4h.pkl"):
+        print("Loading cached BTCUSDT 4h...", flush=True)
+        df_4h = pd.read_pickle("btc2022_4h.pkl")
+    else:
+        df_4h = calculate_indicators(
+            fetch_klines(
+                SYMBOL,
+                Client.KLINE_INTERVAL_4HOUR,
+                start_dt,
+                end_dt
+            )
+        )
+        df_4h.to_pickle("btc2022_4h.pkl")
+
 
     keys = list(PARAM_GRID.keys())
     combos = list(product(*[PARAM_GRID[k] for k in keys]))
@@ -543,23 +562,34 @@ def main():
     results_df = pd.DataFrame(rows)
     results_df = results_df.sort_values(
         by=["rank_score", "profit_factor", "total_return"],
-        ascending=False
+        ascending=False,
     )
 
     top20_df = results_df.head(20)
 
-    result_headers = list(results_df.columns)
-    result_rows = results_df.astype(str).values.tolist()
+    # top 1 실제 거래 상세 저장
+    best_params = top20_df.iloc[0][keys].to_dict()
+    # 숫자 타입 복구
+    for k in ["entry_score"]:
+        best_params[k] = int(best_params[k])
+    for k in ["rsi_limit", "take_profit", "stop_loss", "trail_start", "trail_back"]:
+        best_params[k] = float(best_params[k])
 
-    top_headers = list(top20_df.columns)
-    top_rows = top20_df.astype(str).values.tolist()
+    _, best_trades = run_backtest(df_15m, df_1h, df_4h, best_params, collect_trades=True)
 
-    clear_and_write(result_ws, result_headers, result_rows)
-    clear_and_write(top_ws, top_headers, top_rows)
+    clear_and_write(result_ws, list(results_df.columns), results_df.astype(str).values.tolist())
+    clear_and_write(top_ws, list(top20_df.columns), top20_df.astype(str).values.tolist())
 
-    append_run_log(log_ws, "Optimizer finished")
-    print("Google Sheet Optimizer finished:", now_kst(), flush=True)
-    print("Top 20 saved to Google Sheet:", TOP_SHEET_NAME, flush=True)
+    if not best_trades.empty:
+        clear_and_write(trades_ws, list(best_trades.columns), best_trades.astype(str).values.tolist())
+    else:
+        clear_and_write(trades_ws, ["message"], [["No trades"]])
+
+    append_run_log(log_ws, "Backtest finished")
+    print("Tiered US-Time 365 Backtest finished:", now_kst(), flush=True)
+    print("Saved result to:", RESULT_SHEET_NAME, flush=True)
+    print("Saved top20 to:", TOP_SHEET_NAME, flush=True)
+    print("Saved best trades to:", TRADES_SHEET_NAME, flush=True)
 
 
 if __name__ == "__main__":
