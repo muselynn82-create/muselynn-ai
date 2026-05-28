@@ -402,8 +402,6 @@ def run_backtest(df_15m, df_1h, df_4h, params, collect_trades=False):
             ):
                 exit_reason = "TRAILING_STOP"
 
-            elif big_trend == "BIG_CRASH":
-                exit_reason = "BIG_CRASH_EXIT"
 
             if exit_reason:
                 equity *= (1 + net_pnl / 100)
