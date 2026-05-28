@@ -31,10 +31,10 @@ GOOGLE_CLIENT_EMAIL = os.getenv("GOOGLE_CLIENT_EMAIL")
 GOOGLE_PRIVATE_KEY = os.getenv("GOOGLE_PRIVATE_KEY", "").replace("\\n", "\n")
 GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME")
 
-RESULT_SHEET_NAME = "TIER365_RESULTS"
-TOP_SHEET_NAME = "TIER365_TOP20"
-TRADES_SHEET_NAME = "TIER365_TRADES"
-RUN_LOG_SHEET_NAME = "TIER365_RUNLOG"
+RESULT_SHEET_NAME = "TIER2022_RESULTS"
+TOP_SHEET_NAME = "TIER2022_TOP20"
+TRADES_SHEET_NAME = "TIER2022_TRADES"
+RUN_LOG_SHEET_NAME = "TIER2022_RUNLOG"
 
 # 미국장 시간 필터 고정
 USE_TIME_FILTER = True
@@ -50,7 +50,7 @@ PARAM_GRID = {
     "take_profit": [1.8, 2.5, 3.5],
     "stop_loss": [-1.0, -1.2, -1.5],
     "trail_start": [1.5, 2.0],
-    "trail_back": [0.7, 1.0],
+    "trail_back": [0.5, 0.7, 1.0],
 }
 
 MIN_TRADES = 8
@@ -240,73 +240,7 @@ def calculate_score(now, prev, params):
     score = 0
     strategy = params["strategy_type"]
 
-    # S급 기존 전략: 아주 깊은 눌림 후 양봉 회복
-    if strategy == "ELITE_PULLBACK":
-        if (
-            now["rsi"] < params["rsi_limit"]
-            and now["low"] <= now["bb_lower"] * 1.003
-            and now["close"] > now["open"]
-        ):
-            score += 70
-
-        if price > now["ema100"]:
-            score += 15
-
-        if now["volume_ratio"] >= 0.85:
-            score += 10
-
-        if now["ema20_slope"] > 0:
-            score += 15
-        else:
-            score -= 20
-    
-    elif strategy == "NORMAL_PULLBACK":
-    
-        if 30 <= now["rsi"] <= params["rsi_limit"]:
-            score += 30
-    
-        if price > now["ema50"]:
-            score += 20
-    
-        if now["low"] <= now["ema20"] * 1.01:
-            score += 20
-    
-        if now["close"] > now["open"]:
-            score += 15
-    
-        if now["ema20_slope"] > 0:
-            score += 15
-    
-        if now["volume_ratio"] >= 0.85:
-            score += 10
-    
-        if now["rsi"] > 70:
-            score -= 20
-
-    # M급 돌파: 상승장인데 깊은 눌림이 안 오는 경우 고점 재돌파
-    elif strategy == "MOMENTUM_BREAK":
-        if price > now["prev_high_20"]:
-            score += 35
-
-        if now["ema20"] > now["ema50"] > now["ema100"]:
-            score += 25
-
-        if now["ema20_slope"] > 0:
-            score += 15
-        else:
-            score -= 20
-
-        if 45 <= now["rsi"] <= 68:
-            score += 20
-
-        if now["volume_ratio"] >= 1.2:
-            score += 15
-
-        # 너무 고점 과열이면 감점
-        if now["rsi"] > 72:
-            score -= 25
-
-    elif strategy == "TREND_SHORT":
+    if strategy == "TREND_SHORT":
 
         if price < now["ema200"]:
             score += 25
