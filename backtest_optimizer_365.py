@@ -21,8 +21,8 @@ client = Client(API_KEY, API_SECRET)
 SYMBOL = "BTCUSDT"
 
 # 최근 1년 고정
-START_DATE = "2025-05-26"
-END_DATE = "2026-05-25"
+START_DATE = "2022-01-01"
+END_DATE = "2022-12-31"
 
 FEE_ROUND_TRIP = 0.20
 KST = ZoneInfo("Asia/Seoul")
@@ -42,16 +42,15 @@ USE_TIME_FILTER = True
 # 너무 넓히면 오래 걸리니 1차 연구 범위
 PARAM_GRID = {
     "strategy_type": [
-        "ELITE_PULLBACK",
-        "NORMAL_PULLBACK",
+        "TREND_SHORT",
     ],
 
-    "entry_score": [70, 75, 80],
-    "rsi_limit": [40, 45, 50],
-    "take_profit": [1.8],
-    "stop_loss": [-1.5],
-    "trail_start": [1.5],
-    "trail_back": [0.7],
+    "entry_score": [70, 80, 90],
+    "rsi_limit": [45, 50, 55],
+    "take_profit": [1.8, 2.5, 3.5],
+    "stop_loss": [-1.0, -1.2, -1.5],
+    "trail_start": [1.5, 2.0],
+    "trail_back": [0.7, 1.0],
 }
 
 MIN_TRADES = 8
@@ -307,6 +306,32 @@ def calculate_score(now, prev, params):
         if now["rsi"] > 72:
             score -= 25
 
+    elif strategy == "TREND_SHORT":
+
+        if price < now["ema200"]:
+            score += 25
+
+        if now["ema20"] < now["ema50"] < now["ema100"]:
+            score += 30
+
+        if price < now["ema20"]:
+            score += 15
+
+        if 40 <= now["rsi"] <= params["rsi_limit"]:
+            score += 20
+
+        if now["volume_ratio"] >= 1.1:
+            score += 10
+
+        if now["close"] < now["open"]:
+            score += 10
+
+        if now["close"] < now["low"] + (now["high"] - now["low"]) * 0.35:
+            score += 10
+
+        if now["atr_rate"] > 0.035:
+            score -= 30
+            
     return score
 
 
@@ -357,8 +382,9 @@ def run_backtest(df_15m, df_1h, df_4h, params, collect_trades=False):
 
         # EXIT
         if position_open:
-            gross_pnl = ((price - entry_price) / entry_price) * 100
+            gross_pnl = ((entry_price - price) / entry_price) * 100
             net_pnl = ((1 + gross_pnl / 100) * (1 - FEE_ROUND_TRIP / 100) - 1) * 100
+
             max_pnl = max(max_pnl, net_pnl)
 
             exit_reason = None
@@ -414,7 +440,7 @@ def run_backtest(df_15m, df_1h, df_4h, params, collect_trades=False):
             if not in_us_time(current_time):
                 continue
 
-            if big_trend != "BIG_BULL":
+            if big_trend not in ["BIG_BEAR", "BIG_CRASH"]:
                 continue
 
             in_cooldown = False
@@ -539,9 +565,9 @@ def main():
     # CACHE DATA
     # =========================
     
-    if os.path.exists("btc_15m.pkl"):
+    if os.path.exists("btc2022_15m.pkl"):
         print("Loading cached BTCUSDT 15m...", flush=True)
-        df_15m = pd.read_pickle("btc_15m.pkl")
+        df_15m = pd.read_pickle("btc2022_15m.pkl")
     else:
         df_15m = calculate_indicators(
             fetch_klines(
@@ -551,11 +577,11 @@ def main():
                 end_dt
             )
         )
-        df_15m.to_pickle("btc_15m.pkl")
+        df_15m.to_pickle("btc2022_15m.pkl")
     
-    if os.path.exists("btc_1h.pkl"):
+    if os.path.exists("btc2022_1h.pkl"):
         print("Loading cached BTCUSDT 1h...", flush=True)
-        df_1h = pd.read_pickle("btc_1h.pkl")
+        df_1h = pd.read_pickle("btc2022_1h.pkl")
     else:
         df_1h = calculate_indicators(
             fetch_klines(
@@ -565,11 +591,11 @@ def main():
                 end_dt
             )
         )
-        df_1h.to_pickle("btc_1h.pkl")
+        df_1h.to_pickle("btc2022_1h.pkl")
     
-    if os.path.exists("btc_4h.pkl"):
+    if os.path.exists("btc2022_4h.pkl"):
         print("Loading cached BTCUSDT 4h...", flush=True)
-        df_4h = pd.read_pickle("btc_4h.pkl")
+        df_4h = pd.read_pickle("btc2022_4h.pkl")
     else:
         df_4h = calculate_indicators(
             fetch_klines(
@@ -579,7 +605,7 @@ def main():
                 end_dt
             )
         )
-        df_4h.to_pickle("btc_4h.pkl")
+        df_4h.to_pickle("btc2022_4h.pkl")
 
 
     keys = list(PARAM_GRID.keys())
