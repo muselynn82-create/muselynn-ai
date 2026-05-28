@@ -136,7 +136,7 @@ def fetch_klines(symbol, interval, start_dt, end_dt):
 
         all_rows.extend(candles)
         start_ms = candles[-1][0] + 1
-        time.sleep(0.08)
+        time.sleep(0.35)
 
     df = pd.DataFrame(all_rows, columns=[
         "time", "open", "high", "low", "close", "volume",
@@ -534,9 +534,53 @@ def main():
     start_dt = datetime.strptime(START_DATE, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     end_dt = datetime.strptime(END_DATE, "%Y-%m-%d").replace(tzinfo=timezone.utc)
 
-    df_15m = calculate_indicators(fetch_klines(SYMBOL, Client.KLINE_INTERVAL_15MINUTE, start_dt, end_dt))
-    df_1h = calculate_indicators(fetch_klines(SYMBOL, Client.KLINE_INTERVAL_1HOUR, start_dt, end_dt))
-    df_4h = calculate_indicators(fetch_klines(SYMBOL, Client.KLINE_INTERVAL_4HOUR, start_dt, end_dt))
+
+    # =========================
+    # CACHE DATA
+    # =========================
+    
+    if os.path.exists("btc_15m.pkl"):
+        print("Loading cached BTCUSDT 15m...", flush=True)
+        df_15m = pd.read_pickle("btc_15m.pkl")
+    else:
+        df_15m = calculate_indicators(
+            fetch_klines(
+                SYMBOL,
+                Client.KLINE_INTERVAL_15MINUTE,
+                start_dt,
+                end_dt
+            )
+        )
+        df_15m.to_pickle("btc_15m.pkl")
+    
+    if os.path.exists("btc_1h.pkl"):
+        print("Loading cached BTCUSDT 1h...", flush=True)
+        df_1h = pd.read_pickle("btc_1h.pkl")
+    else:
+        df_1h = calculate_indicators(
+            fetch_klines(
+                SYMBOL,
+                Client.KLINE_INTERVAL_1HOUR,
+                start_dt,
+                end_dt
+            )
+        )
+        df_1h.to_pickle("btc_1h.pkl")
+    
+    if os.path.exists("btc_4h.pkl"):
+        print("Loading cached BTCUSDT 4h...", flush=True)
+        df_4h = pd.read_pickle("btc_4h.pkl")
+    else:
+        df_4h = calculate_indicators(
+            fetch_klines(
+                SYMBOL,
+                Client.KLINE_INTERVAL_4HOUR,
+                start_dt,
+                end_dt
+            )
+        )
+        df_4h.to_pickle("btc_4h.pkl")
+
 
     keys = list(PARAM_GRID.keys())
     combos = list(product(*[PARAM_GRID[k] for k in keys]))
