@@ -43,10 +43,11 @@ USE_TIME_FILTER = True
 PARAM_GRID = {
     "strategy_type": [
         "ELITE_PULLBACK",
+        "NORMAL_PULLBACK",
     ],
 
-    "entry_score": [75, 80],
-    "rsi_limit": [34, 36, 38],
+    "entry_score": [70, 75, 80],
+    "rsi_limit": [40, 45, 50],
     "take_profit": [1.8],
     "stop_loss": [-1.5],
     "trail_start": [1.5],
@@ -260,29 +261,28 @@ def calculate_score(now, prev, params):
         else:
             score -= 20
     
-    # A급 일반 눌림: RSI를 덜 깊게 보고 EMA20/50 부근 재상승을 노림
     elif strategy == "NORMAL_PULLBACK":
-        if 28 <= now["rsi"] <= params["rsi_limit"]:
-            score += 35
-
+    
+        if 30 <= now["rsi"] <= params["rsi_limit"]:
+            score += 30
+    
         if price > now["ema50"]:
             score += 20
-
-        if now["low"] <= now["ema20"] * 1.006:
+    
+        if now["low"] <= now["ema20"] * 1.01:
             score += 20
-
+    
         if now["close"] > now["open"]:
             score += 15
-
-        if now["ema20"] > now["ema50"]:
+    
+        if now["ema20_slope"] > 0:
             score += 15
-
-        if now["volume_ratio"] >= 0.9:
+    
+        if now["volume_ratio"] >= 0.85:
             score += 10
-
-        # 너무 과열된 추격매수 방지
-        if price > now["bb_upper"] * 1.003:
-            score -= 30
+    
+        if now["rsi"] > 70:
+            score -= 20
 
     # M급 돌파: 상승장인데 깊은 눌림이 안 오는 경우 고점 재돌파
     elif strategy == "MOMENTUM_BREAK":
