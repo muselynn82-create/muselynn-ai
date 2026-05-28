@@ -36,13 +36,14 @@ RUN_LOG_SHEET_NAME = "RUNLOG2022SHORT"
 
 # 너무 넓히면 오래 걸리니 1차 자동 연구 범위
 PARAM_GRID = {
-    "strategy_type": ["DEADCAT_SHORT"],
+    "strategy_type": ["TREND_SHORT"],
+
     "entry_score": [80, 90, 100],
-    "rsi_limit": [26, 30, 35],
-    "take_profit": [1.2, 1.8, 2.5, 3.5],
-    "stop_loss": [-0.8, -1.0, -1.2, -1.5],
-    "trail_start": [1.5, 2.0, 3.0],
-    "trail_back": [0.4, 0.5, 0.7, 1.0],
+    "rsi_limit": [45, 50, 55],
+    "take_profit": [1.8, 2.5, 3.5],
+    "stop_loss": [-1.0, -1.2, -1.5],
+    "trail_start": [1.5, 2.0],
+    "trail_back": [0.7, 1.0],
 }
 
 MIN_TRADES = 10
@@ -241,57 +242,33 @@ def calculate_score(now, params):
             score += 10
 
     # =========================
-    # DEADCAT_SHORT
+    # TREND_SHORT
     # =========================
-    elif params["strategy_type"] == "DEADCAT_SHORT":
+    elif params["strategy_type"] == "TREND_SHORT":
 
-        # 큰 하락 추세
-        if (
-            price < now["ema200"]
-            and now["ema20"] < now["ema50"]
-        ):
-            score += 30
-
-        # 단기 과열 반등
-        if (
-            now["high"] >= now["bb_upper"] * 0.995
-            and now["rsi"] > 60
-        ):
-            score += 35
-
-        # 윗꼬리 음봉
-        body = abs(now["close"] - now["open"])
-        upper_wick = now["high"] - max(now["close"], now["open"])
-
-        if (
-            now["close"] < now["open"]
-            and upper_wick > body * 1.5
-        ):
-            score += 30
-
-        # 거래량 터진 실패 반등
-        if now["volume_ratio"] >= 1.5:
-            score += 15
-
-        # 변동성 너무 크면 회피
-        if now["atr_rate"] > 0.025:
-            score -= 40
-
-        if (
-            now["high"] >= now["ema20"] * 0.998
-            and now["close"] < now["open"]
-        ):
+        if price < now["ema200"]:
             score += 25
 
-        if now["rsi"] > 60:
+        if now["ema20"] < now["ema50"] < now["ema100"]:
+            score += 30
+
+        if price < now["ema20"]:
             score += 15
 
-        if now["volume_ratio"] >= 1.2:
-            score += 15
-
-        if price < now["ema100"]:
+        if 40 <= now["rsi"] <= params["rsi_limit"]:
             score += 20
 
+        if now["volume_ratio"] >= 1.1:
+            score += 10
+
+        if now["close"] < now["open"]:
+            score += 10
+
+        if now["close"] < now["low"] + (now["high"] - now["low"]) * 0.35:
+            score += 10
+
+        if now["atr_rate"] > 0.035:
+            score -= 30
     return score
 
 
@@ -417,7 +394,7 @@ def run_backtest(df_15m, df_1h, df_4h, params, collect_trades=False):
                 )
                 or
                 (
-                    params["strategy_type"] == "DEADCAT_SHORT"
+                    params["strategy_type"] == "TREND_SHORT"
                     and big_trend in ["BIG_BEAR", "BIG_CRASH"]
                 )
             )
