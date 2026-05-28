@@ -38,7 +38,7 @@ RUN_LOG_SHEET_NAME = "RUNLOG2022SHORT"
 PARAM_GRID = {
     "strategy_type": ["TREND_SHORT"],
 
-    "entry_score": [80, 90, 100],
+    "entry_score": [70, 80, 90],
     "rsi_limit": [45, 50, 55],
     "take_profit": [1.8, 2.5, 3.5],
     "stop_loss": [-1.0, -1.2, -1.5],
@@ -246,27 +246,35 @@ def calculate_score(now, params):
     # =========================
     elif params["strategy_type"] == "TREND_SHORT":
 
+        # 장기 하락 추세
         if price < now["ema200"]:
             score += 25
 
+        # 중단기 하락 정렬
         if now["ema20"] < now["ema50"] < now["ema100"]:
             score += 30
 
+        # ema20 아래 재하락
         if price < now["ema20"]:
             score += 15
 
+        # 약반등 후 꺾임
         if 40 <= now["rsi"] <= params["rsi_limit"]:
             score += 20
 
+        # 거래량 증가
         if now["volume_ratio"] >= 1.1:
             score += 10
 
+        # 음봉 마감
         if now["close"] < now["open"]:
             score += 10
 
+        # 저가 근처 마감 = 약세 지속
         if now["close"] < now["low"] + (now["high"] - now["low"]) * 0.35:
             score += 10
 
+        # 변동성 과열 회피
         if now["atr_rate"] > 0.035:
             score -= 30
     return score
