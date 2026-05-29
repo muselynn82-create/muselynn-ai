@@ -130,7 +130,7 @@ def init_gspread():
     return gc.open(GOOGLE_SHEET_NAME)
 
 
-def get_or_create_ws(spreadsheet, title, rows=12000, cols=80):
+def get_or_create_ws(spreadsheet, title, rows=1000, cols=40):
     try:
         return spreadsheet.worksheet(title)
     except gspread.WorksheetNotFound:
@@ -160,8 +160,20 @@ def clear_and_write(ws, headers, rows):
     safe_rows = [[sanitize_for_sheet(v) for v in row] for row in rows]
 
     values = [safe_headers] + safe_rows
-    if values:
-        ws.update(range_name="A1", values=values)
+    if not values:
+        return
+
+    need_rows = max(len(values), 1)
+    need_cols = max(len(safe_headers), 1)
+
+    # Google Sheet 1000만 cell 제한 방지:
+    # 새 시트는 작게 만들고, 실제 저장할 범위만큼만 조정한다.
+    try:
+        ws.resize(rows=need_rows, cols=need_cols)
+    except Exception as e:
+        print(f"Worksheet resize skipped: {e}", flush=True)
+
+    ws.update(range_name="A1", values=values)
 
 
 def append_run_log(ws, message):
@@ -542,10 +554,10 @@ def main():
     print("Big Candle Breakout V2 started:", now_kst(), flush=True)
 
     spreadsheet = init_gspread()
-    result_ws = get_or_create_ws(spreadsheet, RESULT_SHEET_NAME, rows=20000, cols=80)
-    top_ws = get_or_create_ws(spreadsheet, TOP_SHEET_NAME, rows=100, cols=80)
-    trades_ws = get_or_create_ws(spreadsheet, TRADES_SHEET_NAME, rows=10000, cols=80)
-    log_ws = get_or_create_ws(spreadsheet, RUN_LOG_SHEET_NAME, rows=2000, cols=10)
+    result_ws = get_or_create_ws(spreadsheet, RESULT_SHEET_NAME, rows=1000, cols=40)
+    top_ws = get_or_create_ws(spreadsheet, TOP_SHEET_NAME, rows=100, cols=40)
+    trades_ws = get_or_create_ws(spreadsheet, TRADES_SHEET_NAME, rows=1000, cols=40)
+    log_ws = get_or_create_ws(spreadsheet, RUN_LOG_SHEET_NAME, rows=500, cols=10)
 
     append_run_log(log_ws, "Backtest started")
 
@@ -596,6 +608,9 @@ def main():
         ascending=False,
     )
 
+    # Google Sheet 1000만 cell 제한 방지
+    # 전체 조합 결과는 너무 커서 상위 1000개만 저장
+    save_results_df = results_df.head(1000)
     top20_df = results_df.head(20)
 
     # 최상위 파라미터 거래내역 저장
@@ -615,10 +630,11 @@ def main():
     _, best_trades = backtest_params(best_df, best_params, collect_trades=True)
     best_trades = best_trades.replace([float("inf"), float("-inf")], "").fillna("")
 
-    clear_and_write(result_ws, list(results_df.columns), results_df.astype(str).values.tolist())
+    clear_and_write(result_ws, list(save_results_df.columns), save_results_df.astype(str).values.tolist())
     clear_and_write(top_ws, list(top20_df.columns), top20_df.astype(str).values.tolist())
 
     if not best_trades.empty:
+        best_trades = best_trades.head(1000)
         clear_and_write(trades_ws, list(best_trades.columns), best_trades.astype(str).values.tolist())
     else:
         clear_and_write(trades_ws, ["message"], [["No trades"]])
