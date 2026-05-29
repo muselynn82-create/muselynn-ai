@@ -6,6 +6,7 @@ from itertools import product
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import numpy as np
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from binance.client import Client
@@ -199,25 +200,36 @@ def add_heikin_ashi(df):
 
 def add_stoch_rsi(df, rsi_length=14, stoch_length=14, k_smooth=3, d_smooth=3):
     df = df.copy()
-    close = df["close"]
+
+    # pd.NA가 rolling 연산에서 object dtype 에러를 만들 수 있어서
+    # 전부 float + np.nan 기반으로 계산한다.
+    close = pd.to_numeric(df["close"], errors="coerce").astype(float)
+
     delta = close.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
+    gain = delta.clip(lower=0).astype(float)
+    loss = (-delta.clip(upper=0)).astype(float)
 
     avg_gain = gain.ewm(alpha=1 / rsi_length, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1 / rsi_length, adjust=False).mean()
-    rs = avg_gain / avg_loss.replace(0, pd.NA)
-    rsi = 100 - (100 / (1 + rs))
 
-    min_rsi = rsi.rolling(stoch_length).min()
-    max_rsi = rsi.rolling(stoch_length).max()
-    stoch_rsi = (rsi - min_rsi) / (max_rsi - min_rsi).replace(0, pd.NA) * 100
+    avg_loss = avg_loss.replace(0, np.nan)
+    rs = avg_gain / avg_loss
+    rsi = (100 - (100 / (1 + rs))).astype(float)
+
+    min_rsi = rsi.rolling(stoch_length, min_periods=stoch_length).min()
+    max_rsi = rsi.rolling(stoch_length, min_periods=stoch_length).max()
+
+    denom = (max_rsi - min_rsi).replace(0, np.nan)
+    stoch_rsi = ((rsi - min_rsi) / denom * 100).astype(float)
+
+    k = stoch_rsi.rolling(k_smooth, min_periods=k_smooth).mean()
+    d = k.rolling(d_smooth, min_periods=d_smooth).mean()
 
     df["rsi"] = rsi
-    df["stoch_k"] = stoch_rsi.rolling(k_smooth).mean()
-    df["stoch_d"] = df["stoch_k"].rolling(d_smooth).mean()
-    return df
+    df["stoch_k"] = k.astype(float)
+    df["stoch_d"] = d.astype(float)
 
+    return df
 
 def add_indicators(df):
     df = add_heikin_ashi(df)
