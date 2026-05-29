@@ -91,7 +91,7 @@ def init_gspread():
     return gc.open(GOOGLE_SHEET_NAME)
 
 
-def get_or_create_ws(spreadsheet, title, rows=30000, cols=90):
+def get_or_create_ws(spreadsheet, title, rows=1000, cols=40):
     try:
         return spreadsheet.worksheet(title)
     except gspread.WorksheetNotFound:
@@ -113,6 +113,7 @@ def sanitize_for_sheet(value):
 
 def clear_and_write(ws, headers, rows):
     ws.clear()
+
     safe_headers = [sanitize_for_sheet(v) for v in headers]
     safe_rows = [[sanitize_for_sheet(v) for v in row] for row in rows]
     values = [safe_headers] + safe_rows
@@ -124,14 +125,13 @@ def clear_and_write(ws, headers, rows):
     need_cols = max(len(safe_headers), 1)
 
     # Google Sheets 전체 1000만 cell 제한 방지:
-    # 새 시트는 작게 만들고, 실제 필요한 만큼만 resize한다.
+    # 시트는 작게 만들고, 실제 저장할 범위만큼만 resize한다.
     try:
         ws.resize(rows=need_rows, cols=need_cols)
     except Exception as e:
         print(f"Worksheet resize skipped: {e}", flush=True)
 
     ws.update(range_name="A1", values=values)
-
 
 def append_run_log(ws, message):
     ws.append_row([now_kst(), message])
@@ -568,6 +568,10 @@ def main():
 
     results_df = results_df.replace([float("inf"), float("-inf")], "").fillna("")
     results_df = results_df.sort_values(by=["rank_score", "profit_factor", "total_return"], ascending=False)
+
+    # Google Sheet 저장량 제한:
+    # 전체 결과 대신 상위 1000개만 저장해서 마지막 저장 에러 방지
+    save_results_df = results_df.head(1000)
     top20_df = results_df.head(20)
 
     best_params = top20_df.iloc[0][keys].to_dict()
@@ -581,9 +585,10 @@ def main():
     _, best_trades = backtest_params(best_df, best_params, collect_trades=True)
     best_trades = best_trades.replace([float("inf"), float("-inf")], "").fillna("")
 
-    clear_and_write(result_ws, list(results_df.columns), results_df.astype(str).values.tolist())
+    clear_and_write(result_ws, list(save_results_df.columns), save_results_df.astype(str).values.tolist())
     clear_and_write(top_ws, list(top20_df.columns), top20_df.astype(str).values.tolist())
     if not best_trades.empty:
+        best_trades = best_trades.head(1000)
         clear_and_write(trades_ws, list(best_trades.columns), best_trades.astype(str).values.tolist())
     else:
         clear_and_write(trades_ws, ["message"], [["No trades"]])
