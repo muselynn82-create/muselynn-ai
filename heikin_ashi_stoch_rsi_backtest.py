@@ -115,8 +115,21 @@ def clear_and_write(ws, headers, rows):
     safe_headers = [sanitize_for_sheet(v) for v in headers]
     safe_rows = [[sanitize_for_sheet(v) for v in row] for row in rows]
     values = [safe_headers] + safe_rows
-    if values:
-        ws.update(range_name="A1", values=values)
+
+    if not values:
+        return
+
+    need_rows = max(len(values), 1)
+    need_cols = max(len(safe_headers), 1)
+
+    # Google Sheets 전체 1000만 cell 제한 방지:
+    # 새 시트는 작게 만들고, 실제 필요한 만큼만 resize한다.
+    try:
+        ws.resize(rows=need_rows, cols=need_cols)
+    except Exception as e:
+        print(f"Worksheet resize skipped: {e}", flush=True)
+
+    ws.update(range_name="A1", values=values)
 
 
 def append_run_log(ws, message):
@@ -502,10 +515,10 @@ def score_rank(row):
 def main():
     print("Heikin Ashi Stoch RSI Backtest started:", now_kst(), flush=True)
     spreadsheet = init_gspread()
-    result_ws = get_or_create_ws(spreadsheet, RESULT_SHEET_NAME, rows=30000, cols=90)
-    top_ws = get_or_create_ws(spreadsheet, TOP_SHEET_NAME, rows=100, cols=90)
-    trades_ws = get_or_create_ws(spreadsheet, TRADES_SHEET_NAME, rows=15000, cols=90)
-    log_ws = get_or_create_ws(spreadsheet, RUN_LOG_SHEET_NAME, rows=2000, cols=10)
+    result_ws = get_or_create_ws(spreadsheet, RESULT_SHEET_NAME, rows=1000, cols=40)
+    top_ws = get_or_create_ws(spreadsheet, TOP_SHEET_NAME, rows=100, cols=40)
+    trades_ws = get_or_create_ws(spreadsheet, TRADES_SHEET_NAME, rows=1000, cols=40)
+    log_ws = get_or_create_ws(spreadsheet, RUN_LOG_SHEET_NAME, rows=500, cols=10)
     append_run_log(log_ws, "Backtest started")
 
     keys = list(PARAM_GRID.keys())
