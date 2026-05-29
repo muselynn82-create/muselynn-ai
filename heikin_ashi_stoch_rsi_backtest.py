@@ -55,6 +55,10 @@ PARAM_GRID = {
     "wick_tolerance": [0.0, 0.0005],
     "ema_price_source": ["REAL_CLOSE"],
     "min_ema_distance_pct": [0.0, 0.5],
+
+    # 속도/무한 보유 방지:
+    # 1h 기준 48=2일, 96=4일 / 4h 기준 48=8일, 96=16일
+    "max_hold_bars": [48, 96],
 }
 
 MIN_TRADES = 50
@@ -356,7 +360,7 @@ def side_allowed(side, params):
     return mode == "BOTH" or mode == f"{side}_ONLY"
 
 
-def simulate_trade(df, entry_idx, side, entry_price, take_profit, stop_loss):
+def simulate_trade(df, entry_idx, side, entry_price, take_profit, stop_loss, max_hold_bars):
     if side == "LONG":
         target_price = entry_price * (1 + take_profit / 100)
         stop_price = entry_price * (1 + stop_loss / 100)
@@ -364,7 +368,9 @@ def simulate_trade(df, entry_idx, side, entry_price, take_profit, stop_loss):
         target_price = entry_price * (1 - take_profit / 100)
         stop_price = entry_price * (1 - stop_loss / 100)
 
-    for j in range(entry_idx + 1, len(df)):
+    last_idx = min(len(df) - 1, entry_idx + int(max_hold_bars))
+
+    for j in range(entry_idx + 1, last_idx + 1):
         row = df.iloc[j]
         high = row["high"]
         low = row["low"]
@@ -373,36 +379,44 @@ def simulate_trade(df, entry_idx, side, entry_price, take_profit, stop_loss):
         if side == "LONG":
             hit_sl = low <= stop_price
             hit_tp = high >= target_price
+
+            # 같은 캔들에서 TP/SL 둘 다 닿으면 보수적으로 SL 우선
             if hit_sl and hit_tp:
                 gross_pnl = ((stop_price - entry_price) / entry_price) * 100
-                return exit_time, stop_price, "STOP_LOSS_SAME_CANDLE", gross_pnl
+                return j, exit_time, stop_price, "STOP_LOSS_SAME_CANDLE", gross_pnl
             if hit_sl:
                 gross_pnl = ((stop_price - entry_price) / entry_price) * 100
-                return exit_time, stop_price, "STOP_LOSS", gross_pnl
+                return j, exit_time, stop_price, "STOP_LOSS", gross_pnl
             if hit_tp:
                 gross_pnl = ((target_price - entry_price) / entry_price) * 100
-                return exit_time, target_price, "TAKE_PROFIT", gross_pnl
+                return j, exit_time, target_price, "TAKE_PROFIT", gross_pnl
+
         else:
             hit_sl = high >= stop_price
             hit_tp = low <= target_price
+
+            # 같은 캔들에서 TP/SL 둘 다 닿으면 보수적으로 SL 우선
             if hit_sl and hit_tp:
                 gross_pnl = ((entry_price - stop_price) / entry_price) * 100
-                return exit_time, stop_price, "STOP_LOSS_SAME_CANDLE", gross_pnl
+                return j, exit_time, stop_price, "STOP_LOSS_SAME_CANDLE", gross_pnl
             if hit_sl:
                 gross_pnl = ((entry_price - stop_price) / entry_price) * 100
-                return exit_time, stop_price, "STOP_LOSS", gross_pnl
+                return j, exit_time, stop_price, "STOP_LOSS", gross_pnl
             if hit_tp:
                 gross_pnl = ((entry_price - target_price) / entry_price) * 100
-                return exit_time, target_price, "TAKE_PROFIT", gross_pnl
+                return j, exit_time, target_price, "TAKE_PROFIT", gross_pnl
 
-    row = df.iloc[-1]
+    # max_hold_bars 안에 TP/SL이 안 닿으면 마지막 캔들 종가 청산
+    row = df.iloc[last_idx]
     exit_price = row["close"]
     exit_time = row["datetime"].strftime("%Y-%m-%d %H:%M:%S")
+
     if side == "LONG":
         gross_pnl = ((exit_price - entry_price) / entry_price) * 100
     else:
         gross_pnl = ((entry_price - exit_price) / entry_price) * 100
-    return exit_time, exit_price, "TIME_EXIT", gross_pnl
+
+    return last_idx, exit_time, exit_price, "TIME_EXIT", gross_pnl
 
 
 def backtest_params(df, params, collect_trades=False):
@@ -441,13 +455,14 @@ def backtest_params(df, params, collect_trades=False):
             continue
 
         entry_price = now["close"]
-        exit_time, exit_price, exit_reason, gross_pnl = simulate_trade(
+        exit_idx, exit_time, exit_price, exit_reason, gross_pnl = simulate_trade(
             df=df,
             entry_idx=i,
             side=side,
             entry_price=entry_price,
             take_profit=params["take_profit"],
             stop_loss=params["stop_loss"],
+            max_hold_bars=params["max_hold_bars"],
         )
 
         net_pnl = net_after_fee(gross_pnl)
@@ -480,11 +495,9 @@ def backtest_params(df, params, collect_trades=False):
             })
         trades.append(trade)
 
-        exit_matches = df.index[df["datetime"].dt.strftime("%Y-%m-%d %H:%M:%S") == exit_time].tolist()
-        if exit_matches:
-            i = int(exit_matches[0]) + 1
-        else:
-            i += 1
+        # 기존 방식은 매 거래마다 전체 datetime을 문자열 변환/검색해서 매우 느렸음.
+        # simulate_trade가 직접 exit_idx를 반환하므로 바로 다음 캔들로 이동.
+        i = int(exit_idx) + 1
 
     trades_df = pd.DataFrame(trades)
     if trades_df.empty:
@@ -574,12 +587,12 @@ def main():
         stats["rank_score"] = score_rank(stats)
         stats["run_time"] = now_kst()
         rows.append(stats)
-        if idx % 100 == 0:
+        if idx % 10 == 0:
             print(f"Progress: {idx}/{len(combos)}", flush=True)
             append_run_log(log_ws, f"Progress: {idx}/{len(combos)}")
 
         # 중간 저장: Railway 재시작/크레딧 부족/마지막 저장 실패 대비
-        if idx % 300 == 0:
+        if idx % 100 == 0:
             temp_df = pd.DataFrame(rows)
 
             if not temp_df.empty:
@@ -625,6 +638,8 @@ def main():
     best_params = top20_df.iloc[0][keys].to_dict()
     for k in ["take_profit", "stop_loss", "wick_tolerance", "min_ema_distance_pct"]:
         best_params[k] = float(best_params[k])
+
+    best_params["max_hold_bars"] = int(best_params["max_hold_bars"])
 
     best_key = f"{best_params['symbol']}_{best_params['interval']}"
     best_df = data_cache.get(best_key)
