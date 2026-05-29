@@ -454,7 +454,10 @@ def main():
     for k in ["risk_reward", "max_prior_return_pct", "min_body_ratio", "min_volume_ratio"]:
         best_params[k] = float(best_params[k])
 
-    best_df = data_cache.get(best_params["interval"]) or load_data(best_params["interval"])
+    if best_params["interval"] in data_cache:
+        best_df = data_cache[best_params["interval"]]
+    else:
+        best_df = load_data(best_params["interval"])
     _, best_trades = backtest_params(best_df, best_params, collect_trades=True)
 
     clear_and_write(result_ws, list(results_df.columns), results_df.astype(str).values.tolist())
