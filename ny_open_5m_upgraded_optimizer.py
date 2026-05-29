@@ -39,17 +39,63 @@ OPEN_MINUTE_KST = 30
 MIN_TRADES = 30
 
 PARAM_GRID = {
-    "trend_filter": ["EMA200", "BIG_BEAR", "BEAR_OR_CRASH", "EMA200_AND_BEAR"],
-    "target_mode": ["RR", "ATR"],
-    "risk_reward": [2.0, 3.0, 4.0],
-    "atr_target_mult": [1.0, 1.5, 2.0],
-    "retest_tolerance": [0.0, 0.0005, 0.001],
-    "min_range_pct": [0.15, 0.25, 0.35],
-    "max_range_pct": [1.2, 1.8, 2.5],
-    "min_volume_ratio": [1.0, 1.3, 1.6],
-    "min_range_atr_mult": [0.0, 0.8, 1.2],
-    "entry_search_hours": [1, 2, 4],
-    "max_hold_hours": [2, 4, 8],
+    # 1차 압축 테스트용:
+    # 기존 157,464 조합 -> 2,048 조합
+    "trend_filter": [
+        "BIG_BEAR",
+        "EMA200_AND_BEAR",
+    ],
+
+    "target_mode": [
+        "RR",
+        "ATR",
+    ],
+
+    "risk_reward": [
+        2.0,
+        3.0,
+    ],
+
+    "atr_target_mult": [
+        1.5,
+        2.0,
+    ],
+
+    "retest_tolerance": [
+        0.0005,
+        0.001,
+    ],
+
+    "min_range_pct": [
+        0.15,
+        0.25,
+    ],
+
+    "max_range_pct": [
+        1.2,
+        1.8,
+    ],
+
+    "min_volume_ratio": [
+        1.3,
+        1.6,
+    ],
+
+    "min_range_atr_mult": [
+        0.8,
+        1.2,
+    ],
+
+    "entry_search_hours": [
+        1,
+        2,
+    ],
+
+    "max_hold_hours": [
+        4,
+        8,
+    ],
+
     "confirm_close": [True],
 }
 
@@ -519,6 +565,34 @@ def main():
             print(f"Progress: {idx}/{len(combos)}", flush=True)
             append_run_log(log_ws, f"Progress: {idx}/{len(combos)}")
 
+        # 중간 저장:
+        # Railway 크레딧 부족/재시작/마지막 저장 실패가 나도 결과 보존
+        if idx % 500 == 0:
+            temp_df = pd.DataFrame(rows)
+
+            if not temp_df.empty:
+                temp_df = temp_df.sort_values(
+                    by=["rank_score", "profit_factor", "total_return"],
+                    ascending=False,
+                )
+
+                temp_save_df = temp_df.head(500)
+
+                clear_and_write(
+                    result_ws,
+                    list(temp_save_df.columns),
+                    temp_save_df.astype(str).values.tolist(),
+                )
+
+                clear_and_write(
+                    top_ws,
+                    list(temp_df.head(20).columns),
+                    temp_df.head(20).astype(str).values.tolist(),
+                )
+
+                append_run_log(log_ws, f"Auto saved top results at {idx}/{len(combos)}")
+                print(f"Auto Saved: {idx}/{len(combos)}", flush=True)
+
     results_df = pd.DataFrame(rows)
 
     if results_df.empty:
@@ -529,8 +603,8 @@ def main():
 
     results_df = results_df.sort_values(by=["rank_score", "profit_factor", "total_return"], ascending=False)
 
-    # Google Sheet 저장량 제한: 전체 결과 대신 상위 1000개만 저장
-    save_results_df = results_df.head(1000)
+    # Google Sheet 저장량 제한: 전체 결과 대신 상위 500개만 저장
+    save_results_df = results_df.head(500)
     top20_df = results_df.head(20)
 
     best_params = top20_df.iloc[0][keys].to_dict()
@@ -547,7 +621,7 @@ def main():
     clear_and_write(top_ws, list(top20_df.columns), top20_df.astype(str).values.tolist())
 
     if not best_trades.empty:
-        best_trades = best_trades.head(1000)
+        best_trades = best_trades.head(500)
         clear_and_write(trades_ws, list(best_trades.columns), best_trades.astype(str).values.tolist())
     else:
         clear_and_write(trades_ws, ["message"], [["No trades"]])
