@@ -106,9 +106,26 @@ def get_or_create_ws(spreadsheet, title, rows=5000, cols=60):
         return spreadsheet.add_worksheet(title=title, rows=rows, cols=cols)
 
 
+def sanitize_for_sheet(value):
+    if pd.isna(value):
+        return ""
+    if isinstance(value, float):
+        if value == float("inf") or value == float("-inf"):
+            return ""
+    return value
+
+
 def clear_and_write(ws, headers, rows):
     ws.clear()
-    values = [headers] + rows
+
+    safe_headers = [sanitize_for_sheet(v) for v in headers]
+    safe_rows = [
+        [sanitize_for_sheet(v) for v in row]
+        for row in rows
+    ]
+
+    values = [safe_headers] + safe_rows
+
     if values:
         ws.update(range_name="A1", values=values)
 
@@ -460,11 +477,11 @@ def main():
         best_df = load_data(best_params["interval"])
     _, best_trades = backtest_params(best_df, best_params, collect_trades=True)
 
-    clear_and_write(result_ws, list(results_df.columns), results_df.astype(str).values.tolist())
-    clear_and_write(top_ws, list(top20_df.columns), top20_df.astype(str).values.tolist())
+    clear_and_write(result_ws, list(results_df.columns), results_df.replace([float("inf"), float("-inf")], "").fillna("").astype(str).values.tolist())
+    clear_and_write(top_ws, list(top20_df.columns), top20_df.replace([float("inf"), float("-inf")], "").fillna("").astype(str).values.tolist())
 
     if not best_trades.empty:
-        clear_and_write(trades_ws, list(best_trades.columns), best_trades.astype(str).values.tolist())
+        clear_and_write(trades_ws, list(best_trades.columns), best_trades.replace([float("inf"), float("-inf")], "").fillna("").astype(str).values.tolist())
     else:
         clear_and_write(trades_ws, ["message"], [["No trades"]])
 
