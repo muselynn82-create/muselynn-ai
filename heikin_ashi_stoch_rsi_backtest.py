@@ -14,7 +14,7 @@ from binance.client import Client
 
 API_KEY = os.getenv("BINANCE_API_KEY")
 API_SECRET = os.getenv("BINANCE_SECRET_KEY")
-client = Client(API_KEY, API_SECRET)
+client = Client(API_KEY, API_SECRET, requests_params={"timeout": 20})
 
 START_DATE = "2022-01-01"
 END_DATE = "2026-05-25"
@@ -35,11 +35,7 @@ CACHE_PREFIX = "ha_stoch"
 SYMBOLS = [
     "BTCUSDT",
     "ETHUSDT",
-    "BNBUSDT",
     "SOLUSDT",
-    "XRPUSDT",
-    "ADAUSDT",
-    "DOGEUSDT",
 ]
 
 INTERVAL_MAP = {
@@ -49,15 +45,16 @@ INTERVAL_MAP = {
 }
 
 PARAM_GRID = {
+    # 1차 압축 테스트용: 30,618 조합 -> 1,296 조합
     "symbol": SYMBOLS,
-    "interval": ["1h", "2h", "4h"],
-    "direction_mode": ["BOTH", "LONG_ONLY", "SHORT_ONLY"],
-    "take_profit": [2.0, 3.0, 4.0],
-    "stop_loss": [-1.0, -1.5, -2.0],
-    "stoch_zone": ["NONE", "SOFT_ZONE", "STRICT_ZONE"],
-    "wick_tolerance": [0.0, 0.0005, 0.001],
-    "ema_price_source": ["REAL_CLOSE", "HA_CLOSE"],
-    "min_ema_distance_pct": [0.0, 0.5, 1.0],
+    "interval": ["1h", "4h"],
+    "direction_mode": ["LONG_ONLY", "SHORT_ONLY"],
+    "take_profit": [3.0, 4.0],
+    "stop_loss": [-1.5, -2.0],
+    "stoch_zone": ["NONE", "SOFT_ZONE"],
+    "wick_tolerance": [0.0, 0.0005],
+    "ema_price_source": ["REAL_CLOSE"],
+    "min_ema_distance_pct": [0.0, 0.5],
 }
 
 MIN_TRADES = 50
@@ -146,19 +143,41 @@ def fetch_klines(symbol, interval, start_dt, end_dt):
     all_rows = []
     start_ms = dt_to_ms(start_dt)
     end_ms = dt_to_ms(end_dt)
+    batch_count = 0
+    retry_count = 0
 
     while start_ms < end_ms:
-        candles = client.get_klines(
-            symbol=symbol,
-            interval=interval,
-            startTime=start_ms,
-            endTime=end_ms,
-            limit=1000,
-        )
+        try:
+            candles = client.get_klines(
+                symbol=symbol,
+                interval=interval,
+                startTime=start_ms,
+                endTime=end_ms,
+                limit=1000,
+            )
+        except Exception as e:
+            retry_count += 1
+            print(f"Download retry {retry_count}/5 for {symbol} {interval}: {e}", flush=True)
+            time.sleep(3)
+
+            if retry_count >= 5:
+                raise
+
+            continue
+
+        retry_count = 0
+
         if not candles:
             break
+
         all_rows.extend(candles)
         start_ms = candles[-1][0] + 1
+        batch_count += 1
+
+        if batch_count % 5 == 0:
+            last_dt = pd.to_datetime(candles[-1][0], unit="ms", utc=True).tz_convert("Asia/Seoul")
+            print(f"Downloaded {symbol} {interval}: {len(all_rows)} candles, last={last_dt}", flush=True)
+
         time.sleep(0.35)
 
     df = pd.DataFrame(all_rows, columns=[
@@ -175,6 +194,7 @@ def fetch_klines(symbol, interval, start_dt, end_dt):
         df[col] = df[col].astype(float)
 
     df["datetime"] = pd.to_datetime(df["time"], unit="ms", utc=True).dt.tz_convert("Asia/Seoul")
+    print(f"Finished downloading {symbol} {interval}: {len(df)} candles", flush=True)
     return add_indicators(df)
 
 
@@ -554,9 +574,37 @@ def main():
         stats["rank_score"] = score_rank(stats)
         stats["run_time"] = now_kst()
         rows.append(stats)
-        if idx % 200 == 0:
+        if idx % 100 == 0:
             print(f"Progress: {idx}/{len(combos)}", flush=True)
             append_run_log(log_ws, f"Progress: {idx}/{len(combos)}")
+
+        # 중간 저장: Railway 재시작/크레딧 부족/마지막 저장 실패 대비
+        if idx % 300 == 0:
+            temp_df = pd.DataFrame(rows)
+
+            if not temp_df.empty:
+                temp_df = temp_df.replace([float("inf"), float("-inf")], "").fillna("")
+                temp_df = temp_df.sort_values(
+                    by=["rank_score", "profit_factor", "total_return"],
+                    ascending=False,
+                )
+
+                temp_save_df = temp_df.head(500)
+
+                clear_and_write(
+                    result_ws,
+                    list(temp_save_df.columns),
+                    temp_save_df.astype(str).values.tolist(),
+                )
+
+                clear_and_write(
+                    top_ws,
+                    list(temp_df.head(20).columns),
+                    temp_df.head(20).astype(str).values.tolist(),
+                )
+
+                append_run_log(log_ws, f"Auto saved top results at {idx}/{len(combos)}")
+                print(f"Auto Saved: {idx}/{len(combos)}", flush=True)
 
     results_df = pd.DataFrame(rows)
     if results_df.empty:
@@ -571,7 +619,7 @@ def main():
 
     # Google Sheet 저장량 제한:
     # 전체 결과 대신 상위 1000개만 저장해서 마지막 저장 에러 방지
-    save_results_df = results_df.head(1000)
+    save_results_df = results_df.head(500)
     top20_df = results_df.head(20)
 
     best_params = top20_df.iloc[0][keys].to_dict()
@@ -588,7 +636,7 @@ def main():
     clear_and_write(result_ws, list(save_results_df.columns), save_results_df.astype(str).values.tolist())
     clear_and_write(top_ws, list(top20_df.columns), top20_df.astype(str).values.tolist())
     if not best_trades.empty:
-        best_trades = best_trades.head(1000)
+        best_trades = best_trades.head(500)
         clear_and_write(trades_ws, list(best_trades.columns), best_trades.astype(str).values.tolist())
     else:
         clear_and_write(trades_ws, ["message"], [["No trades"]])
