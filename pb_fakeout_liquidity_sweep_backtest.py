@@ -58,6 +58,9 @@ INTERVAL_MAP = {
 }
 
 PARAM_GRID = {
+    "symbol": ["BTCUSDT"],
+    "interval": ["15m"],
+
     "lookback_bars": [48, 96],
     "direction_mode": ["BOTH"],
     "risk_reward": [2.0, 3.0],
@@ -69,7 +72,7 @@ PARAM_GRID = {
     "min_volume_ratio": [0.0],
     "target_mode": ["RR"],
     "max_hold_bars": [24],
-    "cooldown_bars": [12],    
+    "cooldown_bars": [12],
 }
 
 MIN_TRADES = 30
