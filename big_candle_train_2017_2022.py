@@ -160,7 +160,7 @@ def clear_and_write(ws, headers, rows):
 
 
 def append_run_log(ws, message):
-    ws.append_row([now_kst(), message])
+    print(f"[RUNLOG] {now_kst()} {message}", flush=True)
 
 
 # =========================
