@@ -12,9 +12,9 @@ from binance.client import Client
 
 
 # ============================================================
-# BTC BIG CANDLE ORIGINAL vs VOLUME FILTER VERIFY 2022-2026
+# BTC BIG CANDLE ORIGINAL vs VOLUME FILTER FULL 2017-2026
 # ============================================================
-# 원본 최고 BTC 세팅과 수정본 세팅을 2022년부터 비교
+# 원본 최고 BTC 세팅과 수정본 세팅을 2017년부터 전체 비교
 #
 # 원본:
 #   BTCUSDT / 1w / lookback 6 / RR 3.0 / BODY
@@ -38,7 +38,7 @@ API_KEY = os.getenv("BINANCE_API_KEY")
 API_SECRET = os.getenv("BINANCE_SECRET_KEY")
 client = Client(API_KEY, API_SECRET, requests_params={"timeout": 20})
 
-START_DATE = "2022-01-01"
+START_DATE = "2017-08-17"
 END_DATE = "2026-05-25"
 
 FEE_ROUND_TRIP = 0.20
@@ -48,13 +48,13 @@ GOOGLE_CLIENT_EMAIL = os.getenv("GOOGLE_CLIENT_EMAIL")
 GOOGLE_PRIVATE_KEY = os.getenv("GOOGLE_PRIVATE_KEY", "").replace("\\n", "\n")
 GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME")
 
-RESULT_SHEET_NAME = "BTC_ORIG_VS_VOL_RESULTS"
-TRADES_SHEET_NAME = "BTC_ORIG_VS_VOL_TRADES"
-MDD_SHEET_NAME = "BTC_ORIG_VS_VOL_MDD"
-YEARLY_SHEET_NAME = "BTC_ORIG_VS_VOL_YEARLY"
-RUN_LOG_SHEET_NAME = "BTC_ORIG_VS_VOL_RUNLOG"
+RESULT_SHEET_NAME = "BTC_ORIG_VS_VOL_FULL_RESULTS"
+TRADES_SHEET_NAME = "BTC_ORIG_VS_VOL_FULL_TRADES"
+MDD_SHEET_NAME = "BTC_ORIG_VS_VOL_FULL_MDD"
+YEARLY_SHEET_NAME = "BTC_ORIG_VS_VOL_FULL_YEARLY"
+RUN_LOG_SHEET_NAME = "BTC_ORIG_VS_VOL_FULL_RUNLOG"
 
-CACHE_PREFIX = "btc_orig_vs_vol_2022_2026"
+CACHE_PREFIX = "btc_orig_vs_vol_2017_2026"
 
 PARAM_GRID = {
     "symbol": ["BTCUSDT"],
@@ -533,7 +533,7 @@ def make_yearly_summary(trades_df, params, label):
 
 
 def main():
-    print("BTC Original vs Volume Filter Verify started:", now_kst(), flush=True)
+    print("BTC Original vs Volume Filter FULL 2017-2026 started:", now_kst(), flush=True)
 
     spreadsheet = init_gspread()
     result_ws = get_or_create_ws(spreadsheet, RESULT_SHEET_NAME, rows=100, cols=80)
@@ -542,7 +542,7 @@ def main():
     yearly_ws = get_or_create_ws(spreadsheet, YEARLY_SHEET_NAME, rows=1000, cols=80)
     log_ws = get_or_create_ws(spreadsheet, RUN_LOG_SHEET_NAME, rows=100, cols=10)
 
-    append_run_log(log_ws, "Original vs volume filter test started")
+    append_run_log(log_ws, "Original vs volume filter full test started")
 
     keys = list(PARAM_GRID.keys())
     combos = list(product(*[PARAM_GRID[k] for k in keys]))
@@ -606,8 +606,8 @@ def main():
     else:
         clear_and_write(yearly_ws, ["message"], [["No yearly data"]])
 
-    append_run_log(log_ws, "Original vs volume filter test finished")
-    print("BTC Original vs Volume Filter Verify finished:", now_kst(), flush=True)
+    append_run_log(log_ws, "Original vs volume filter full test finished")
+    print("BTC Original vs Volume Filter FULL 2017-2026 finished:", now_kst(), flush=True)
 
 
 if __name__ == "__main__":
