@@ -187,7 +187,7 @@ def clear_and_write(ws, headers, rows):
     ws.update(range_name="A1", values=values)
 
 def append_run_log(ws, message):
-    ws.append_row([now_kst(), message])
+    print(f"[RUNLOG] {now_kst()} {message}", flush=True)
 
 
 def dt_to_ms(dt):
