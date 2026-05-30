@@ -301,12 +301,23 @@ def load_or_fetch(symbol, interval_label, interval):
     cache_file = cache_name(symbol, interval_label)
 
     if os.path.exists(cache_file):
-        print(f"Loading cached data: {cache_file}", flush=True)
-        df = pd.read_pickle(cache_file)
-        if "atr" not in df.columns or "volume_ratio" not in df.columns:
-            df = add_indicators(df)
-            df.to_pickle(cache_file)
-        return df
+        try:
+            print(f"Loading cached data: {cache_file}", flush=True)
+            df = pd.read_pickle(cache_file)
+
+            if "atr" not in df.columns or "volume_ratio" not in df.columns:
+                df = add_indicators(df)
+                df.to_pickle(cache_file)
+
+            return df
+
+        except Exception as e:
+            print(f"Broken cache detected: {cache_file} / {e}", flush=True)
+            try:
+                os.remove(cache_file)
+                print(f"Deleted broken cache: {cache_file}", flush=True)
+            except Exception as remove_error:
+                print(f"Failed to delete broken cache: {remove_error}", flush=True)
 
     df = fetch_klines(symbol, interval, start_dt, end_dt)
     df = add_indicators(df)
