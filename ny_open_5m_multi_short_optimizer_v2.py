@@ -192,7 +192,7 @@ def clear_and_write(ws, headers, rows):
 
 
 def append_run_log(ws, message):
-    ws.append_row([now_kst(), message])
+    print(f"[RUNLOG] {now_kst()} {message}", flush=True)
 
 
 def dt_to_ms(dt):
@@ -711,7 +711,6 @@ def main():
 
         if idx % 100 == 0:
             print(f"Progress: {idx}/{len(combos)}", flush=True)
-            append_run_log(log_ws, f"Progress: {idx}/{len(combos)}")
 
         # 중간 저장: Railway 크레딧 부족/재시작/마지막 저장 실패 대비
         if idx % 300 == 0:
@@ -739,7 +738,6 @@ def main():
                     temp_top20_df.astype(str).values.tolist(),
                 )
 
-                append_run_log(log_ws, f"Auto saved top results at {idx}/{len(combos)}")
                 print(f"Auto Saved: {idx}/{len(combos)}", flush=True)
 
     results_df = pd.DataFrame(rows)
