@@ -12,26 +12,34 @@ from binance.client import Client
 
 
 # ============================================================
-# BIG CANDLE BREAKOUT v2
-# 목적:
-# - 기존 BIG_CANDLE의 표본 부족 / PF999 과대평가 문제 수정
-# - BTC만이 아니라 바이낸스 주요 코인 여러 개 동시 검증
-# - 월봉/주봉/일봉을 따로 보고, 랭킹은 거래수 부족 패널티 반영
-# - 중간 미실현 MDD도 반영
-# - 같은 봉 TP/SL 동시 터치 시 보수적으로 SL 처리
+# BTC BIG CANDLE ORIGINAL vs VOLUME FILTER VERIFY 2022-2026
+# ============================================================
+# 원본 최고 BTC 세팅과 수정본 세팅을 2022년부터 비교
+#
+# 원본:
+#   BTCUSDT / 1w / lookback 6 / RR 3.0 / BODY
+#   body_ratio 0.5 / volume_ratio 0.0 / EMA OFF
+#
+# 수정본:
+#   BTCUSDT / 1w / lookback 6 / RR 3.0 / BODY
+#   body_ratio 0.5 / volume_ratio 1.0 / EMA OFF
+#
+# 추가 확인:
+#   RR 2.5도 같이 비교
+#
+# MDD는 3개로 분리:
+#   realized_mdd   = 청산 후 계좌 기준 MDD
+#   intratrade_mdd = 포지션 보유 중 저가 기준 미실현 MDD
+#   total_mdd      = 둘 중 더 나쁜 값
 # ============================================================
 
-
-# =========================
-# CONFIG
-# =========================
 
 API_KEY = os.getenv("BINANCE_API_KEY")
 API_SECRET = os.getenv("BINANCE_SECRET_KEY")
 client = Client(API_KEY, API_SECRET, requests_params={"timeout": 20})
 
-START_DATE = "2017-08-17"
-END_DATE = "2022-12-31"
+START_DATE = "2022-01-01"
+END_DATE = "2026-05-25"
 
 FEE_ROUND_TRIP = 0.20
 KST = ZoneInfo("Asia/Seoul")
@@ -40,53 +48,60 @@ GOOGLE_CLIENT_EMAIL = os.getenv("GOOGLE_CLIENT_EMAIL")
 GOOGLE_PRIVATE_KEY = os.getenv("GOOGLE_PRIVATE_KEY", "").replace("\\n", "\n")
 GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME")
 
-RESULT_SHEET_NAME = "BIG_CANDLE_TRAIN_RESULTS"
-TOP_SHEET_NAME = "BIG_CANDLE_TRAIN_TOP20"
-TRADES_SHEET_NAME = "BIG_CANDLE_TRAIN_TRADES"
-RUN_LOG_SHEET_NAME = "BIG_CANDLE_TRAIN_RUNLOG"
+RESULT_SHEET_NAME = "BTC_ORIG_VS_VOL_RESULTS"
+TRADES_SHEET_NAME = "BTC_ORIG_VS_VOL_TRADES"
+MDD_SHEET_NAME = "BTC_ORIG_VS_VOL_MDD"
+YEARLY_SHEET_NAME = "BTC_ORIG_VS_VOL_YEARLY"
+RUN_LOG_SHEET_NAME = "BTC_ORIG_VS_VOL_RUNLOG"
 
-CACHE_PREFIX = "big_candle_train_2017_2022"
+CACHE_PREFIX = "btc_orig_vs_vol_2022_2026"
 
-# 바이낸스에서 받을 수 있는 주요 USDT 현물 코인
-# 너무 많이 넣으면 오래 걸리니 1차는 이 정도만 추천
-SYMBOLS = [
-    "BTCUSDT",
-]
-
-# interval:
-# 1d = 일봉, 1w = 주봉, 1M = 월봉
-# 월봉/주봉은 거래수가 적으니 신호 참고용, 일봉은 표본 확보용
 PARAM_GRID = {
-    "symbol": SYMBOLS,
-
-    "interval": ["1d", "1w", "1M"],
-
-    "lookback_bars": [4, 5, 6, 7, 8, 10],
-
-    "risk_reward": [2.0, 2.5, 3.0, 3.5],
-
-    "breakout_mode": ["BODY", "HIGH"],
-
-    "max_prior_return_pct": [2.0, 5.0, 999.0],
-
-    "min_body_ratio": [0.5, 0.6, 0.7],
-
-    "min_volume_ratio": [0.0, 1.0, 1.3],
-
-    "ema200_filter": [False, True],
+    "symbol": ["BTCUSDT"],
+    "interval": ["1w"],
+    "lookback_bars": [6],
+    "risk_reward": [2.5, 3.0],
+    "breakout_mode": ["BODY"],
+    "max_prior_return_pct": [999.0],
+    "min_body_ratio": [0.5],
+    "min_volume_ratio": [0.0, 1.0],
+    "ema200_filter": [False],
 }
 
-# 거래수 신뢰도 기준
-MIN_TRADES_STRONG = 30
-MIN_TRADES_WEAK = 10
-
-
-# =========================
-# GOOGLE SHEETS
-# =========================
 
 def now_kst():
     return datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def sanitize_for_sheet(value):
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+        return ""
+    return value
+
+
+def dt_to_ms(dt):
+    return int(dt.timestamp() * 1000)
+
+
+def net_after_fee(gross_pnl):
+    return ((1 + gross_pnl / 100) * (1 - FEE_ROUND_TRIP / 100) - 1) * 100
+
+
+def calc_cagr(total_return_pct):
+    start_dt = datetime.strptime(START_DATE, "%Y-%m-%d")
+    end_dt = datetime.strptime(END_DATE, "%Y-%m-%d")
+    years = max((end_dt - start_dt).days / 365.25, 0.01)
+    final_equity = 1 + float(total_return_pct) / 100
+    if final_equity <= 0:
+        return -100.0
+    return round(((final_equity ** (1 / years)) - 1) * 100, 2)
 
 
 def init_gspread():
@@ -94,7 +109,6 @@ def init_gspread():
         "https://spreadsheets.google.com/feeds",
         "https://www.googleapis.com/auth/drive",
     ]
-
     creds_dict = {
         "type": "service_account",
         "project_id": os.getenv("GOOGLE_PROJECT_ID"),
@@ -107,77 +121,52 @@ def init_gspread():
         "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
         "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/{GOOGLE_CLIENT_EMAIL}",
     }
-
     credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     gc = gspread.authorize(credentials)
     return gc.open(GOOGLE_SHEET_NAME)
 
 
-def get_or_create_ws(spreadsheet, title, rows=1000, cols=40):
+def get_or_create_ws(spreadsheet, title, rows=1000, cols=80):
     try:
         return spreadsheet.worksheet(title)
     except gspread.WorksheetNotFound:
         return spreadsheet.add_worksheet(title=title, rows=rows, cols=cols)
 
 
-def sanitize_for_sheet(value):
-    if value is None:
-        return ""
-    try:
-        if pd.isna(value):
-            return ""
-    except Exception:
-        pass
-
-    if isinstance(value, float):
-        if math.isnan(value) or math.isinf(value):
-            return ""
-
-    return value
-
-
 def clear_and_write(ws, headers, rows):
     ws.clear()
-
-    safe_headers = [sanitize_for_sheet(v) for v in headers]
-    safe_rows = [[sanitize_for_sheet(v) for v in row] for row in rows]
-
-    values = [safe_headers] + safe_rows
-    if not values:
-        return
-
-    need_rows = max(len(values), 1)
-    need_cols = max(len(safe_headers), 1)
-
-    # Google Sheet 1000만 cell 제한 방지:
-    # 새 시트는 작게 만들고, 실제 저장할 범위만큼만 조정한다.
+    values = [[sanitize_for_sheet(v) for v in headers]]
+    values += [[sanitize_for_sheet(v) for v in row] for row in rows]
     try:
-        ws.resize(rows=need_rows, cols=need_cols)
+        ws.resize(rows=max(len(values), 1), cols=max(len(headers), 1))
     except Exception as e:
         print(f"Worksheet resize skipped: {e}", flush=True)
-
     ws.update(range_name="A1", values=values)
 
 
 def append_run_log(ws, message):
-    ws.append_row([now_kst(), message])
+    print(f"[RUNLOG] {now_kst()} {message}", flush=True)
+    try:
+        ws.append_row([now_kst(), message])
+    except Exception as e:
+        print(f"RUNLOG append failed: {e}", flush=True)
 
 
-# =========================
-# DATA
-# =========================
-
-def dt_to_ms(dt):
-    return int(dt.timestamp() * 1000)
+def interval_to_binance(interval):
+    if interval == "1d":
+        return Client.KLINE_INTERVAL_1DAY
+    if interval == "1w":
+        return Client.KLINE_INTERVAL_1WEEK
+    if interval == "1M":
+        return Client.KLINE_INTERVAL_1MONTH
+    raise ValueError(f"Unsupported interval: {interval}")
 
 
 def fetch_klines(symbol, interval, start_dt, end_dt):
     print(f"Downloading {symbol} {interval} data...", flush=True)
-
     all_rows = []
     start_ms = dt_to_ms(start_dt)
     end_ms = dt_to_ms(end_dt)
-    batch_count = 0
     retry_count = 0
 
     while start_ms < end_ms:
@@ -191,27 +180,17 @@ def fetch_klines(symbol, interval, start_dt, end_dt):
             )
         except Exception as e:
             retry_count += 1
-            print(f"Download retry {retry_count}/5 for {symbol} {interval}: {e}", flush=True)
+            print(f"Download retry {retry_count}/5: {e}", flush=True)
             time.sleep(3)
-
             if retry_count >= 5:
                 raise
-
             continue
 
         retry_count = 0
-
         if not candles:
             break
-
         all_rows.extend(candles)
         start_ms = candles[-1][0] + 1
-        batch_count += 1
-
-        if batch_count % 5 == 0:
-            last_dt = pd.to_datetime(candles[-1][0], unit="ms", utc=True).tz_convert("Asia/Seoul")
-            print(f"Downloaded {symbol} {interval}: {len(all_rows)} candles, last={last_dt}", flush=True)
-
         time.sleep(0.35)
 
     df = pd.DataFrame(all_rows, columns=[
@@ -221,7 +200,7 @@ def fetch_klines(symbol, interval, start_dt, end_dt):
     ])
 
     if df.empty:
-        return df
+        raise RuntimeError(f"No data downloaded for {symbol} {interval}")
 
     df = df.drop_duplicates(subset=["time"]).reset_index(drop=True)
 
@@ -229,76 +208,57 @@ def fetch_klines(symbol, interval, start_dt, end_dt):
         df[col] = df[col].astype(float)
 
     df["datetime"] = pd.to_datetime(df["time"], unit="ms", utc=True).dt.tz_convert("Asia/Seoul")
-
-    print(f"Finished downloading {symbol} {interval}: {len(df)} candles", flush=True)
     return add_indicators(df)
 
 
 def add_indicators(df):
     df = df.copy()
-
     df["body_top"] = df[["open", "close"]].max(axis=1)
-    df["body_bottom"] = df[["open", "close"]].min(axis=1)
     df["range"] = df["high"] - df["low"]
     df["body"] = (df["close"] - df["open"]).abs()
     df["body_ratio"] = df["body"] / df["range"].replace(0, pd.NA)
-
-    df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
     df["ema200"] = df["close"].ewm(span=200, adjust=False).mean()
-
     df["volume_ma"] = df["volume"].rolling(20).mean()
     df["volume_ratio"] = df["volume"] / df["volume_ma"]
-
     return df
 
 
-def load_data(symbol, interval):
-    cache_file = f"{CACHE_PREFIX}_{symbol}_{interval}.pkl"
+def cache_name(symbol, interval_label):
+    return f"{CACHE_PREFIX}_{symbol}_{interval_label}.pkl"
+
+
+def load_data(symbol, interval_label):
+    cache_file = cache_name(symbol, interval_label)
 
     if os.path.exists(cache_file):
-        print(f"Loading cached {symbol} {interval}: {cache_file}", flush=True)
-        df = pd.read_pickle(cache_file)
-        required_cols = ["body_ratio", "ema200", "volume_ratio"]
-        if all(col in df.columns for col in required_cols):
+        try:
+            print(f"Loading cached data: {cache_file}", flush=True)
+            df = pd.read_pickle(cache_file)
+            required_cols = ["body_ratio", "ema200", "volume_ratio", "body_top"]
+            if not all(col in df.columns for col in required_cols):
+                df = add_indicators(df)
+                df.to_pickle(cache_file)
             return df
-        df = add_indicators(df)
-        df.to_pickle(cache_file)
-        return df
+        except Exception as e:
+            print(f"Broken cache detected: {e}", flush=True)
+            try:
+                os.remove(cache_file)
+            except Exception:
+                pass
 
     start_dt = datetime.strptime(START_DATE, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     end_dt = datetime.strptime(END_DATE, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-
+    interval = interval_to_binance(interval_label)
     df = fetch_klines(symbol, interval, start_dt, end_dt)
-
-    if df.empty:
-        print(f"No data: {symbol} {interval}", flush=True)
-        return df
-
     df.to_pickle(cache_file)
     return df
 
 
-# =========================
-# BACKTEST
-# =========================
-
-def net_after_fee(gross_pnl):
-    return ((1 + gross_pnl / 100) * (1 - FEE_ROUND_TRIP / 100) - 1) * 100
-
-def calc_cagr(total_return_pct):
-    start_dt = datetime.strptime(START_DATE, "%Y-%m-%d")
-    end_dt = datetime.strptime(END_DATE, "%Y-%m-%d")
-    years = max((end_dt - start_dt).days / 365.25, 0.01)
-
-    try:
-        final_equity = 1 + float(total_return_pct) / 100
-        if final_equity <= 0:
-            return -100.0
-        return round(((final_equity ** (1 / years)) - 1) * 100, 2)
-    except Exception:
-        return 0.0
-
-
+def strategy_label(params):
+    vol = float(params["min_volume_ratio"])
+    rr = float(params["risk_reward"])
+    base = "ORIGINAL_VOL_0" if vol == 0 else "MODIFIED_VOL_1"
+    return f"{base}_RR_{rr}"
 
 
 def is_setup(df, i, params):
@@ -306,44 +266,40 @@ def is_setup(df, i, params):
     now = df.iloc[i]
     prev = df.iloc[i - lb:i]
 
-    # 강한 양봉
     if now["close"] <= now["open"]:
         return False
 
     if pd.isna(now["body_ratio"]) or now["body_ratio"] < params["min_body_ratio"]:
         return False
 
-    # 거래량 필터
     if params["min_volume_ratio"] > 0:
         if pd.isna(now["volume_ratio"]) or now["volume_ratio"] < params["min_volume_ratio"]:
             return False
 
-    # EMA200 위에서만 롱
     if params["ema200_filter"]:
         if pd.isna(now["ema200"]) or now["close"] <= now["ema200"]:
             return False
 
-    # 직전 구간이 조정/횡보였는지
     max_prior = params["max_prior_return_pct"]
     if max_prior < 999:
         prior_return = ((prev["close"].iloc[-1] - prev["close"].iloc[0]) / prev["close"].iloc[0]) * 100
         if prior_return > max_prior:
             return False
 
-    # 돌파 기준
     if params["breakout_mode"] == "BODY":
-        breakout_level = prev["body_top"].max()
-        return now["close"] > breakout_level
+        return now["close"] > prev["body_top"].max()
 
     if params["breakout_mode"] == "HIGH":
-        breakout_level = prev["high"].max()
-        return now["close"] > breakout_level
+        return now["close"] > prev["high"].max()
 
     return False
 
 
-def simulate_long_with_unrealized_mdd(df, entry_idx, entry_price, stop_price, target_price, current_equity, peak_equity):
+def simulate_long_detailed(df, entry_idx, entry_price, stop_price, target_price, current_equity):
     local_min_equity = current_equity
+    local_min_price = entry_price
+    local_min_time = df.iloc[entry_idx]["datetime"].strftime("%Y-%m-%d %H:%M:%S")
+    local_min_net_pnl = 0.0
 
     for j in range(entry_idx + 1, len(df)):
         row = df.iloc[j]
@@ -351,52 +307,60 @@ def simulate_long_with_unrealized_mdd(df, entry_idx, entry_price, stop_price, ta
         high = row["high"]
         exit_time = row["datetime"].strftime("%Y-%m-%d %H:%M:%S")
 
-        # 미실현 손실 기준 MDD 반영
         unrealized_low_pnl = ((low - entry_price) / entry_price) * 100
         unrealized_low_net = net_after_fee(unrealized_low_pnl)
         mark_equity = current_equity * (1 + unrealized_low_net / 100)
-        local_min_equity = min(local_min_equity, mark_equity)
+
+        if mark_equity < local_min_equity:
+            local_min_equity = mark_equity
+            local_min_price = low
+            local_min_time = exit_time
+            local_min_net_pnl = unrealized_low_net
 
         hit_sl = low <= stop_price
         hit_tp = high >= target_price
 
-        # 같은 봉에서 TP/SL 둘 다 터치하면 보수적으로 SL 우선
         if hit_sl and hit_tp:
             gross_pnl = ((stop_price - entry_price) / entry_price) * 100
-            return exit_time, stop_price, "STOP_LOSS_SAME_CANDLE", gross_pnl, local_min_equity
+            return j, exit_time, stop_price, "STOP_LOSS_SAME_CANDLE", gross_pnl, local_min_equity, local_min_price, local_min_time, local_min_net_pnl
 
         if hit_sl:
             gross_pnl = ((stop_price - entry_price) / entry_price) * 100
-            return exit_time, stop_price, "STOP_LOSS", gross_pnl, local_min_equity
+            return j, exit_time, stop_price, "STOP_LOSS", gross_pnl, local_min_equity, local_min_price, local_min_time, local_min_net_pnl
 
         if hit_tp:
             gross_pnl = ((target_price - entry_price) / entry_price) * 100
-            return exit_time, target_price, "TAKE_PROFIT", gross_pnl, local_min_equity
+            return j, exit_time, target_price, "TAKE_PROFIT", gross_pnl, local_min_equity, local_min_price, local_min_time, local_min_net_pnl
 
     row = df.iloc[-1]
     exit_price = row["close"]
     exit_time = row["datetime"].strftime("%Y-%m-%d %H:%M:%S")
     gross_pnl = ((exit_price - entry_price) / entry_price) * 100
+    return len(df) - 1, exit_time, exit_price, "TIME_EXIT", gross_pnl, local_min_equity, local_min_price, local_min_time, local_min_net_pnl
 
-    return exit_time, exit_price, "TIME_EXIT", gross_pnl, local_min_equity
 
-
-def backtest_params(df, params, collect_trades=False):
+def backtest_params(df, params):
     trades = []
+    mdd_events = []
+
     equity = 100.0
     peak_equity = 100.0
-    max_drawdown = 0.0
+    realized_mdd = 0.0
+    intratrade_mdd = 0.0
+    total_mdd = 0.0
 
     lb = int(params["lookback_bars"])
+    label = strategy_label(params)
 
     i = lb
+    trade_no = 0
+
     while i < len(df):
         if not is_setup(df, i, params):
             i += 1
             continue
 
         now = df.iloc[i]
-
         entry_price = now["close"]
         stop_price = now["low"]
         risk = entry_price - stop_price
@@ -407,293 +371,243 @@ def backtest_params(df, params, collect_trades=False):
 
         target_price = entry_price + risk * params["risk_reward"]
 
-        exit_time, exit_price, exit_reason, gross_pnl, local_min_equity = simulate_long_with_unrealized_mdd(
-            df=df,
-            entry_idx=i,
-            entry_price=entry_price,
-            stop_price=stop_price,
-            target_price=target_price,
-            current_equity=equity,
-            peak_equity=peak_equity,
-        )
+        (
+            exit_idx, exit_time, exit_price, exit_reason, gross_pnl,
+            local_min_equity, local_min_price, local_min_time, local_min_net_pnl
+        ) = simulate_long_detailed(df, i, entry_price, stop_price, target_price, equity)
 
-        # 미실현 MDD 먼저 반영
-        unrealized_dd = ((local_min_equity - peak_equity) / peak_equity) * 100
-        max_drawdown = min(max_drawdown, unrealized_dd)
+        trade_no += 1
+
+        trade_intratrade_dd = ((local_min_equity - peak_equity) / peak_equity) * 100
+        if trade_intratrade_dd < intratrade_mdd:
+            intratrade_mdd = trade_intratrade_dd
+            mdd_events.append({
+                **params,
+                "strategy_key": label,
+                "mdd_type": "INTRATRADE_LOW",
+                "trade_no": trade_no,
+                "entry_time": now["datetime"].strftime("%Y-%m-%d %H:%M:%S"),
+                "mdd_time": local_min_time,
+                "entry_price": round(entry_price, 2),
+                "mdd_price": round(local_min_price, 2),
+                "equity_before_trade": round(equity, 4),
+                "peak_equity_before_trade": round(peak_equity, 4),
+                "mdd_equity": round(local_min_equity, 4),
+                "mdd_pct": round(trade_intratrade_dd, 4),
+                "trade_low_net_pnl": round(local_min_net_pnl, 4),
+            })
 
         net_pnl = net_after_fee(gross_pnl)
+        equity_before = equity
         equity *= (1 + net_pnl / 100)
         peak_equity = max(peak_equity, equity)
 
-        realized_dd = ((equity - peak_equity) / peak_equity) * 100
-        max_drawdown = min(max_drawdown, realized_dd)
-
-        trade = {
-            "net_pnl": net_pnl,
-            "exit_reason": exit_reason,
-            "equity": equity,
-            "max_drawdown": max_drawdown,
-        }
-
-        if collect_trades:
-            trade.update({
+        trade_realized_dd = ((equity - peak_equity) / peak_equity) * 100
+        if trade_realized_dd < realized_mdd:
+            realized_mdd = trade_realized_dd
+            mdd_events.append({
                 **params,
+                "strategy_key": label,
+                "mdd_type": "REALIZED_CLOSE",
+                "trade_no": trade_no,
                 "entry_time": now["datetime"].strftime("%Y-%m-%d %H:%M:%S"),
-                "exit_time": exit_time,
+                "mdd_time": exit_time,
                 "entry_price": round(entry_price, 2),
-                "stop_price": round(stop_price, 2),
-                "target_price": round(target_price, 2),
-                "exit_price": round(exit_price, 2),
-                "gross_pnl": round(gross_pnl, 4),
-                "net_pnl": round(net_pnl, 4),
-                "exit_reason": exit_reason,
-                "equity": round(equity, 4),
-                "max_drawdown": round(max_drawdown, 4),
-                "body_ratio": round(now["body_ratio"], 4) if not pd.isna(now["body_ratio"]) else "",
-                "volume_ratio": round(now["volume_ratio"], 4) if not pd.isna(now["volume_ratio"]) else "",
-                "ema200": round(now["ema200"], 2) if not pd.isna(now["ema200"]) else "",
+                "mdd_price": round(exit_price, 2),
+                "equity_before_trade": round(equity_before, 4),
+                "peak_equity_before_trade": round(peak_equity, 4),
+                "mdd_equity": round(equity, 4),
+                "mdd_pct": round(trade_realized_dd, 4),
+                "trade_low_net_pnl": round(net_pnl, 4),
             })
 
-        trades.append(trade)
+        total_mdd = min(realized_mdd, intratrade_mdd)
 
-        # 같은 포지션 중복 진입 방지: 종료 캔들 이후부터 탐색
-        exit_matches = df.index[df["datetime"].dt.strftime("%Y-%m-%d %H:%M:%S") == exit_time].tolist()
-        if exit_matches:
-            i = int(exit_matches[0]) + 1
-        else:
-            i += 1
+        trades.append({
+            **params,
+            "strategy_key": label,
+            "trade_no": trade_no,
+            "entry_time": now["datetime"].strftime("%Y-%m-%d %H:%M:%S"),
+            "entry_year": int(now["datetime"].year),
+            "exit_time": exit_time,
+            "exit_year": int(pd.to_datetime(exit_time).year),
+            "entry_price": round(entry_price, 2),
+            "stop_price": round(stop_price, 2),
+            "target_price": round(target_price, 2),
+            "exit_price": round(exit_price, 2),
+            "gross_pnl": round(gross_pnl, 4),
+            "net_pnl": round(net_pnl, 4),
+            "exit_reason": exit_reason,
+            "equity_before": round(equity_before, 4),
+            "equity_after": round(equity, 4),
+            "peak_equity_after": round(peak_equity, 4),
+            "realized_mdd": round(realized_mdd, 4),
+            "intratrade_mdd": round(intratrade_mdd, 4),
+            "total_mdd": round(total_mdd, 4),
+            "trade_low_time": local_min_time,
+            "trade_low_price": round(local_min_price, 2),
+            "trade_low_net_pnl": round(local_min_net_pnl, 4),
+            "trade_intratrade_dd": round(trade_intratrade_dd, 4),
+            "body_ratio": round(now["body_ratio"], 4) if not pd.isna(now["body_ratio"]) else "",
+            "volume_ratio": round(now["volume_ratio"], 4) if not pd.isna(now["volume_ratio"]) else "",
+            "ema200": round(now["ema200"], 2) if not pd.isna(now["ema200"]) else "",
+        })
+
+        i = int(exit_idx) + 1
 
     trades_df = pd.DataFrame(trades)
+    mdd_df = pd.DataFrame(mdd_events)
 
     if trades_df.empty:
         return {
-            **params,
-            "trades": 0,
-            "win_rate": 0,
-            "total_return": 0,
-            "cagr": 0,
-            "max_drawdown": 0,
-            "avg_win": 0,
-            "avg_loss": 0,
-            "profit_factor": 0,
-            "tp_count": 0,
-            "sl_count": 0,
-            "same_candle_sl_count": 0,
-            "time_exit_count": 0,
-            "trust_grade": "NO_SAMPLE",
-        }, trades_df
+            **params, "strategy_key": label, "trades": 0, "win_rate": 0,
+            "total_return": 0, "cagr": 0, "realized_mdd": 0,
+            "intratrade_mdd": 0, "total_mdd": 0, "avg_win": 0,
+            "avg_loss": 0, "profit_factor": 0, "tp_count": 0,
+            "sl_count": 0, "same_candle_sl_count": 0, "time_exit_count": 0,
+        }, trades_df, mdd_df
 
     wins = trades_df[trades_df["net_pnl"] > 0]
     losses = trades_df[trades_df["net_pnl"] <= 0]
     exit_counts = trades_df["exit_reason"].value_counts().to_dict()
 
-    total_trades = len(trades_df)
-    win_rate = len(wins) / total_trades * 100
-    total_return = trades_df["equity"].iloc[-1] - 100
-    max_dd = trades_df["max_drawdown"].min()
-    avg_win = wins["net_pnl"].mean() if not wins.empty else 0
-    avg_loss = losses["net_pnl"].mean() if not losses.empty else 0
-
+    total_return = trades_df["equity_after"].iloc[-1] - 100
     gross_profit = wins["net_pnl"].sum() if not wins.empty else 0
     gross_loss = losses["net_pnl"].sum() if not losses.empty else 0
-
-    if gross_loss == 0:
-        profit_factor = 999.0
-    else:
-        profit_factor = abs(gross_profit / gross_loss)
-
-    if total_trades >= MIN_TRADES_STRONG:
-        trust_grade = "STRONG"
-    elif total_trades >= MIN_TRADES_WEAK:
-        trust_grade = "WEAK"
-    else:
-        trust_grade = "LOW_SAMPLE"
+    profit_factor = 999.0 if gross_loss == 0 else abs(gross_profit / gross_loss)
 
     return {
         **params,
-        "trades": total_trades,
-        "win_rate": round(win_rate, 2),
+        "strategy_key": label,
+        "trades": len(trades_df),
+        "win_rate": round(len(wins) / len(trades_df) * 100, 2),
         "total_return": round(total_return, 2),
         "cagr": calc_cagr(total_return),
-        "max_drawdown": round(max_dd, 2),
-        "avg_win": round(avg_win, 4),
-        "avg_loss": round(avg_loss, 4),
+        "realized_mdd": round(realized_mdd, 2),
+        "intratrade_mdd": round(intratrade_mdd, 2),
+        "total_mdd": round(total_mdd, 2),
+        "avg_win": round(wins["net_pnl"].mean() if not wins.empty else 0, 4),
+        "avg_loss": round(losses["net_pnl"].mean() if not losses.empty else 0, 4),
         "profit_factor": round(profit_factor, 4),
         "tp_count": int(exit_counts.get("TAKE_PROFIT", 0)),
         "sl_count": int(exit_counts.get("STOP_LOSS", 0)) + int(exit_counts.get("STOP_LOSS_SAME_CANDLE", 0)),
         "same_candle_sl_count": int(exit_counts.get("STOP_LOSS_SAME_CANDLE", 0)),
         "time_exit_count": int(exit_counts.get("TIME_EXIT", 0)),
-        "trust_grade": trust_grade,
-    }, trades_df
+    }, trades_df, mdd_df
 
 
-def score_rank(row):
-    score = 0.0
+def make_yearly_summary(trades_df, params, label):
+    if trades_df.empty:
+        return pd.DataFrame()
 
-    pf = min(float(row["profit_factor"]), 10.0)
+    rows = []
+    for year, g in trades_df.groupby("entry_year"):
+        equity = 100.0
+        peak = 100.0
+        realized_mdd = 0.0
 
-    score += pf * 100
-    score += float(row["total_return"]) * 1.5
-    score += float(row.get("cagr", 0)) * 4
-    score += float(row["win_rate"]) * 0.5
-    score += float(row["max_drawdown"]) * 4
+        for _, row in g.iterrows():
+            equity *= (1 + float(row["net_pnl"]) / 100)
+            peak = max(peak, equity)
+            dd = ((equity - peak) / peak) * 100
+            realized_mdd = min(realized_mdd, dd)
 
-    trades = int(row["trades"])
+        wins = g[g["net_pnl"].astype(float) > 0]
+        losses = g[g["net_pnl"].astype(float) <= 0]
 
-    # 표본 부족 강한 패널티
-    if trades < 3:
-        score -= 500
-    elif trades < MIN_TRADES_WEAK:
-        score -= 250
-    elif trades < MIN_TRADES_STRONG:
-        score -= 80
-    else:
-        score += 100
+        rows.append({
+            **params,
+            "strategy_key": label,
+            "year": int(year),
+            "trades": len(g),
+            "win_rate": round(len(wins) / len(g) * 100, 2) if len(g) else 0,
+            "year_return": round(equity - 100, 2),
+            "year_realized_mdd": round(realized_mdd, 2),
+            "avg_win": round(wins["net_pnl"].astype(float).mean(), 4) if not wins.empty else 0,
+            "avg_loss": round(losses["net_pnl"].astype(float).mean(), 4) if not losses.empty else 0,
+            "tp_count": int((g["exit_reason"] == "TAKE_PROFIT").sum()),
+            "sl_count": int(g["exit_reason"].astype(str).str.contains("STOP_LOSS").sum()),
+        })
 
-    if float(row["profit_factor"]) < 1:
-        score -= 150
+    return pd.DataFrame(rows)
 
-    if float(row["total_return"]) < 0:
-        score -= 120
-
-    if float(row["max_drawdown"]) < -25:
-        score -= 150
-
-    # 월봉/주봉은 참고용이라 과대평가 방지
-    if row["interval"] == "1M":
-        score -= 150
-    elif row["interval"] == "1w":
-        score -= 50
-
-    return round(score, 4)
-
-
-# =========================
-# MAIN
-# =========================
 
 def main():
-    print("BTC Big Candle TRAIN 2017-2022 started:", now_kst(), flush=True)
+    print("BTC Original vs Volume Filter Verify started:", now_kst(), flush=True)
 
     spreadsheet = init_gspread()
-    result_ws = get_or_create_ws(spreadsheet, RESULT_SHEET_NAME, rows=1000, cols=40)
-    top_ws = get_or_create_ws(spreadsheet, TOP_SHEET_NAME, rows=100, cols=40)
-    trades_ws = get_or_create_ws(spreadsheet, TRADES_SHEET_NAME, rows=1000, cols=40)
-    log_ws = get_or_create_ws(spreadsheet, RUN_LOG_SHEET_NAME, rows=500, cols=10)
+    result_ws = get_or_create_ws(spreadsheet, RESULT_SHEET_NAME, rows=100, cols=80)
+    trades_ws = get_or_create_ws(spreadsheet, TRADES_SHEET_NAME, rows=1000, cols=80)
+    mdd_ws = get_or_create_ws(spreadsheet, MDD_SHEET_NAME, rows=1000, cols=80)
+    yearly_ws = get_or_create_ws(spreadsheet, YEARLY_SHEET_NAME, rows=1000, cols=80)
+    log_ws = get_or_create_ws(spreadsheet, RUN_LOG_SHEET_NAME, rows=100, cols=10)
 
-    append_run_log(log_ws, "Backtest started")
+    append_run_log(log_ws, "Original vs volume filter test started")
 
     keys = list(PARAM_GRID.keys())
     combos = list(product(*[PARAM_GRID[k] for k in keys]))
 
-    print(f"Total combinations: {len(combos)}", flush=True)
-    append_run_log(log_ws, f"Total combinations: {len(combos)}")
-
     data_cache = {}
-    rows = []
+    result_rows = []
+    all_trades = []
+    all_mdd = []
+    all_yearly = []
 
     for idx, values in enumerate(combos, start=1):
         params = dict(zip(keys, values))
-        symbol = params["symbol"]
-        interval = params["interval"]
-        cache_key = f"{symbol}_{interval}"
+        label = strategy_label(params)
+        cache_key = f"{params['symbol']}_{params['interval']}"
 
         if cache_key not in data_cache:
-            data_cache[cache_key] = load_data(symbol, interval)
+            data_cache[cache_key] = load_data(params["symbol"], params["interval"])
 
-        df = data_cache[cache_key]
-
-        if df.empty or len(df) < params["lookback_bars"] + 10:
-            continue
-
-        stats, _ = backtest_params(df, params, collect_trades=False)
-        stats["rank_score"] = score_rank(stats)
+        stats, trades_df, mdd_df = backtest_params(data_cache[cache_key], params)
         stats["run_time"] = now_kst()
-        rows.append(stats)
+        result_rows.append(stats)
 
-        if idx % 100 == 0:
-            print(f"Progress: {idx}/{len(combos)}", flush=True)
-            append_run_log(log_ws, f"Progress: {idx}/{len(combos)}")
+        if not trades_df.empty:
+            all_trades.append(trades_df)
+            ydf = make_yearly_summary(trades_df, params, label)
+            if not ydf.empty:
+                all_yearly.append(ydf)
 
-        if idx % 200 == 0:
-            temp_df = pd.DataFrame(rows)
+        if not mdd_df.empty:
+            all_mdd.append(mdd_df)
 
-            if not temp_df.empty:
-                temp_df = temp_df.replace([float("inf"), float("-inf")], "").fillna("")
-                temp_df = temp_df.sort_values(
-                    by=["rank_score", "profit_factor", "total_return"],
-                    ascending=False,
-                )
+        print(f"Progress: {idx}/{len(combos)} {label}", flush=True)
 
-                temp_save_df = temp_df.head(500)
-                temp_top20_df = temp_df.head(20)
+    results_df = pd.DataFrame(result_rows).replace([float("inf"), float("-inf")], "").fillna("")
+    results_df = results_df.sort_values(by=["total_return", "cagr", "total_mdd"], ascending=[False, False, False])
 
-                clear_and_write(
-                    result_ws,
-                    list(temp_save_df.columns),
-                    temp_save_df.astype(str).values.tolist(),
-                )
+    trades_all_df = pd.concat(all_trades, ignore_index=True).replace([float("inf"), float("-inf")], "").fillna("") if all_trades else pd.DataFrame()
+    mdd_all_df = pd.concat(all_mdd, ignore_index=True).replace([float("inf"), float("-inf")], "").fillna("") if all_mdd else pd.DataFrame()
+    yearly_df = pd.concat(all_yearly, ignore_index=True).replace([float("inf"), float("-inf")], "").fillna("") if all_yearly else pd.DataFrame()
 
-                clear_and_write(
-                    top_ws,
-                    list(temp_top20_df.columns),
-                    temp_top20_df.astype(str).values.tolist(),
-                )
+    clear_and_write(result_ws, list(results_df.columns), results_df.astype(str).values.tolist())
+    time.sleep(3)
 
-                append_run_log(log_ws, f"Auto saved top results at {idx}/{len(combos)}")
-                print(f"Auto Saved: {idx}/{len(combos)}", flush=True)
-
-    results_df = pd.DataFrame(rows)
-
-    if results_df.empty:
-        clear_and_write(result_ws, ["message"], [["No results"]])
-        clear_and_write(top_ws, ["message"], [["No results"]])
-        clear_and_write(trades_ws, ["message"], [["No trades"]])
-        append_run_log(log_ws, "No results")
-        return
-
-    results_df = results_df.replace([float("inf"), float("-inf")], "").fillna("")
-    results_df = results_df.sort_values(
-        by=["rank_score", "profit_factor", "total_return"],
-        ascending=False,
-    )
-
-    # Google Sheet 1000만 cell 제한 방지
-    # 전체 조합 결과는 너무 커서 상위 1000개만 저장
-    save_results_df = results_df.head(1000)
-    top20_df = results_df.head(20)
-
-    # 최상위 파라미터 거래내역 저장
-    best_params = top20_df.iloc[0][keys].to_dict()
-    best_params["lookback_bars"] = int(best_params["lookback_bars"])
-    best_params["risk_reward"] = float(best_params["risk_reward"])
-    best_params["max_prior_return_pct"] = float(best_params["max_prior_return_pct"])
-    best_params["min_body_ratio"] = float(best_params["min_body_ratio"])
-    best_params["min_volume_ratio"] = float(best_params["min_volume_ratio"])
-    best_params["ema200_filter"] = str(best_params["ema200_filter"]).lower() == "true" or best_params["ema200_filter"] is True
-
-    best_key = f"{best_params['symbol']}_{best_params['interval']}"
-    best_df = data_cache.get(best_key)
-    if best_df is None:
-        best_df = load_data(best_params["symbol"], best_params["interval"])
-
-    _, best_trades = backtest_params(best_df, best_params, collect_trades=True)
-    best_trades = best_trades.replace([float("inf"), float("-inf")], "").fillna("")
-
-    clear_and_write(result_ws, list(save_results_df.columns), save_results_df.astype(str).values.tolist())
-    clear_and_write(top_ws, list(top20_df.columns), top20_df.astype(str).values.tolist())
-
-    if not best_trades.empty:
-        best_trades = best_trades.head(1000)
-        clear_and_write(trades_ws, list(best_trades.columns), best_trades.astype(str).values.tolist())
+    if not trades_all_df.empty:
+        clear_and_write(trades_ws, list(trades_all_df.columns), trades_all_df.astype(str).values.tolist())
     else:
         clear_and_write(trades_ws, ["message"], [["No trades"]])
 
-    append_run_log(log_ws, "Backtest finished")
-    print("BTC Big Candle TRAIN 2017-2022 finished:", now_kst(), flush=True)
-    print("Saved result to:", RESULT_SHEET_NAME, flush=True)
-    print("Saved top20 to:", TOP_SHEET_NAME, flush=True)
-    print("Saved best trades to:", TRADES_SHEET_NAME, flush=True)
+    time.sleep(3)
+
+    if not mdd_all_df.empty:
+        mdd_all_df = mdd_all_df.sort_values(by=["mdd_pct"], ascending=True)
+        clear_and_write(mdd_ws, list(mdd_all_df.columns), mdd_all_df.astype(str).values.tolist())
+    else:
+        clear_and_write(mdd_ws, ["message"], [["No MDD events"]])
+
+    time.sleep(3)
+
+    if not yearly_df.empty:
+        clear_and_write(yearly_ws, list(yearly_df.columns), yearly_df.astype(str).values.tolist())
+    else:
+        clear_and_write(yearly_ws, ["message"], [["No yearly data"]])
+
+    append_run_log(log_ws, "Original vs volume filter test finished")
+    print("BTC Original vs Volume Filter Verify finished:", now_kst(), flush=True)
 
 
 if __name__ == "__main__":
