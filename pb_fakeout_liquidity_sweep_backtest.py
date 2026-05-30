@@ -54,25 +54,22 @@ SYMBOLS = [
 ]
 
 INTERVAL_MAP = {
-    "5m": Client.KLINE_INTERVAL_5MINUTE,
     "15m": Client.KLINE_INTERVAL_15MINUTE,
 }
 
 PARAM_GRID = {
-    "symbol": SYMBOLS,
-    "interval": ["5m", "15m"],
     "lookback_bars": [48, 96],
-    "direction_mode": ["BOTH", "LONG_ONLY", "SHORT_ONLY"],
-    "risk_reward": [2.0, 2.5, 3.0],
-    "stop_buffer_pct": [0.03, 0.05],
-    "min_sweep_pct": [0.03, 0.05, 0.10],
-    "min_reclaim_body_ratio": [0.0, 0.35],
-    "min_range_pct": [0.20, 0.35],
-    "max_range_pct": [2.0, 3.5],
-    "min_volume_ratio": [0.0, 1.2],
-    "target_mode": ["RR", "OPPOSITE"],
-    "max_hold_bars": [24, 48],
-    "cooldown_bars": [0, 12],
+    "direction_mode": ["BOTH"],
+    "risk_reward": [2.0, 3.0],
+    "stop_buffer_pct": [0.05],
+    "min_sweep_pct": [0.05, 0.10],
+    "min_reclaim_body_ratio": [0.0],
+    "min_range_pct": [0.20],
+    "max_range_pct": [3.5],
+    "min_volume_ratio": [0.0],
+    "target_mode": ["RR"],
+    "max_hold_bars": [24],
+    "cooldown_bars": [12],    
 }
 
 MIN_TRADES = 30
