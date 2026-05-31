@@ -702,10 +702,20 @@ def main():
 
     summary_df, detail_df = analyze_overlap(weekly_trades, h4_trades)
 
-    for df in [summary_df, detail_df, weekly_trades, h4_trades]:
-        if not df.empty:
-            df.replace([float("inf"), float("-inf")], "", inplace=True)
-            df.fillna("", inplace=True)
+    # pandas 2.x에서 float 컬럼에 ""를 inplace fillna 하면 LossySetitemError가 날 수 있음.
+    # 구글시트 저장 직전에만 object/string-friendly 형태로 안전 변환.
+    def safe_sheet_df(df):
+        if df is None or df.empty:
+            return df
+        out = df.copy()
+        out = out.replace([float("inf"), float("-inf")], np.nan)
+        out = out.astype(object).where(pd.notna(out), "")
+        return out
+
+    summary_df = safe_sheet_df(summary_df)
+    detail_df = safe_sheet_df(detail_df)
+    weekly_trades = safe_sheet_df(weekly_trades)
+    h4_trades = safe_sheet_df(h4_trades)
 
     clear_and_write(
         summary_ws,
